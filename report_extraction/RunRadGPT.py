@@ -32,8 +32,16 @@ def main() -> int:
     data = load_data(args.data_path)
     data = data.dropna(subset=["ID", "Report"])
 
-    base, ext = os.path.splitext(args.save_path)
-    output_path = f"{base}_prompt{args.prompt_id}{ext or '.csv'}"
+    save_dir = os.path.dirname(args.save_path)
+    save_name = os.path.basename(args.save_path)
+    prompt_dir = os.path.join(save_dir, f"prompt{args.prompt_id}")
+    os.makedirs(prompt_dir, exist_ok=True)
+
+    base, ext = os.path.splitext(save_name)
+    output_path = os.path.join(
+        prompt_dir,
+        f"{base}_prompt{args.prompt_id}{ext or '.csv'}",
+    )
 
     rgpt.run_inference(
         data,

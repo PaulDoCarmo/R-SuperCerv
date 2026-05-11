@@ -3,7 +3,7 @@
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=8
-#SBATCH --time=00:05:00
+#SBATCH --time=00:15:00
 #SBATCH --job-name=rsupercerv_llm
 #SBATCH --output=/home/pauldcrm/links/scratch/R-SuperCerv/logs/llm_%j.out
 #SBATCH --error=/home/pauldcrm/links/scratch/R-SuperCerv/logs/llm_%j.err

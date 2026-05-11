@@ -64,6 +64,49 @@ USER_PROMPT_1 = (
     "If you are sure there is no hemorrhage/edema, reply with: \"No lesions mentioned.\""
 )
 
+USER_PROMPT_2 = (
+    "Instructions: The radiology report below describes intracranial hemorrhages "
+    "(ICH, IVH, SDH, etc.) and associated findings like perihematomal edema (PHE).\n\n"
+    "Read the report carefully. Every finding must be isolated.\n"
+    "Fill out the template below exactly:\n"
+    "lesion X: type = _; certainty = _; size = _; structure = _; lateralization = _; "
+    "artifacts = _;\n\n"
+    "Consider the following rules for brain hemorrhage:\n"
+    "1. MAPPING & DEFINITIONS (Types)\n"
+    "ICH: Intracerebral / Intraparenchymal Hemorrhage (Hematome/Hemorragie intraparenchymateuse).\n"
+    "IVH: Intraventricular Hemorrhage (Deversement/Inondation intraventriculaire).\n"
+    "PHE: Perihematomal Edema (Oedeme vasogene au pourtour).\n"
+    "SAH: Subarachnoid Hemorrhage (Hemorragie sous-arachnoidienne).\n"
+    "SDH: Subdural Hemorrhage (Hematome sous-dural).\n"
+    "EDH: Epidural Hemorrhage (Hematome extra-dural).\n"
+    "2. EXTRACTION RULES\n"
+    "ATOMICITY (The \"No Conjunction\" Rule): Generate one line per structure. If a lesion is "
+    "\"Frontal et Parietal\", you MUST generate two lines: one for Frontal and one for Parietal. "
+    "If a report mentions multiple distinct ICH foci (e.g., \"une frontale gauche\" and "
+    "\"second foyer temporal\"), create two separate entries for ICH.\n"
+    "STRUCTURE vs LATERALIZATION: The structure column must ONLY contain the anatomical name "
+    "(e.g., \"Frontal\", \"Thalamus\", \"V3\"). The side (Left, Right) MUST be moved to the "
+    "lateralization column.\n"
+    "Example: \"Lenticulaire gauche\" -> structure: Lenticular; lateralization: Left.\n"
+    "COLUMN MAPPING:\n"
+    "size: Use for dimensions (e.g., \"2x3 cm\") or descriptors (\"Small\", \"Large\"). "
+    "You MUST write the units (cm or mm) as found in the text. If not specified, assume mm. "
+    "For PHE, put the severity here (\"Mild\", \"Moderate\", \"Severe\").\n"
+    "structure :\n"
+    "- For ICH/SAH/SDH/EDH: The brain lobe or region.\n"
+    "- For IVH: The specific ventricle name (e.g., V3, V4, Corne occipitale).\n"
+    "- For PHE: The region it surrounds.\n"
+    "lateralization: Must be \"Left\", \"Right\", \"Bilateral\", \"Median\", or \"U\".\n"
+    "HALLUCINATION PREVENTION: For every column EXCEPT type, if the information is not explicitly "
+    "mentioned or is unclear, you MUST use \"U\".\n"
+    "LANGUAGE: The output must be 100% in English. Translate anatomical terms (e.g., "
+    "\"tronc cerebral\" -> \"Brainstem\").\n"
+    "3. LOGIC VALUES\n"
+    "CERTAINTY: certain, high (probable), low (suspected/trace).\n"
+    "ARTIFACTS: drain, embolization, movement, metal, None.\n"
+    "If you are sure there is no hemorrhage/edema, reply with: \"No lesions mentioned.\""
+)
+
 _CLIENT = None
 _MODEL = None
 
@@ -84,6 +127,44 @@ def get_user_prompt(prompt_id: int) -> str:
     if prompt is None:
         raise ValueError(f"Unknown prompt_id: {prompt_id}")
     return prompt
+
+
+def get_prompt_schema(prompt_id: int) -> Dict[str, object]:
+    if prompt_id == 1:
+        output_fields = [
+            "type",
+            "certainty",
+            "size",
+            "structure",
+            "lateralization",
+            "ventricle_details",
+            "severity_phe",
+            "artifacts",
+        ]
+        key_aliases = {
+            "ventricle details": "ventricle_details",
+            "ventricle_detail": "ventricle_details",
+            "severity phe": "severity_phe",
+        }
+    elif prompt_id == 2:
+        output_fields = [
+            "type",
+            "certainty",
+            "size",
+            "structure",
+            "lateralization",
+            "artifacts",
+        ]
+        key_aliases = {}
+    else:
+        raise ValueError(f"Unknown prompt_id: {prompt_id}")
+
+    fields_template = {field: "U" for field in output_fields}
+    return {
+        "output_fields": output_fields,
+        "fields_template": fields_template,
+        "key_aliases": key_aliases,
+    }
 
 
 def build_message(report: str, prompt_id: int) -> List[Dict[str, str]]:
@@ -107,26 +188,14 @@ def send_message(report: str, base_url: str, prompt_id: int) -> str:
     return response.choices[0].message.content
 
 
-def parse_answer(answer: str) -> List[Dict[str, str]]:
+def parse_answer(answer: str, prompt_id: int) -> List[Dict[str, str]]:
     cleaned = answer.strip()
     if cleaned.lower().startswith("no lesions mentioned"):
         return []
 
-    fields_template = {
-        "type": "U",
-        "certainty": "U",
-        "size": "U",
-        "structure": "U",
-        "lateralization": "U",
-        "ventricle_details": "U",
-        "severity_phe": "U",
-        "artifacts": "U",
-    }
-    key_aliases = {
-        "ventricle details": "ventricle_details",
-        "ventricle_detail": "ventricle_details",
-        "severity phe": "severity_phe",
-    }
+    schema = get_prompt_schema(prompt_id)
+    fields_template = schema["fields_template"]
+    key_aliases = schema["key_aliases"]
 
     lesions = []
     pattern = re.compile(r"lesion\s*\d+\s*:\s*(.*?)(?=\n\s*lesion\s*\d+\s*:|$)", re.IGNORECASE | re.DOTALL)
@@ -164,17 +233,11 @@ def run_inference(
 
     mode = "w" if restart else "a"
     write_header = restart or not os.path.exists(output_path)
+    schema = get_prompt_schema(prompt_id)
     output_cols = [
         "ID",
         "Lesion Index",
-        "type",
-        "certainty",
-        "size",
-        "structure",
-        "lateralization",
-        "ventricle_details",
-        "severity_phe",
-        "artifacts",
+        *schema["output_fields"],
         "DNN Answer",
         "Report",
     ]
@@ -188,21 +251,16 @@ def run_inference(
             report = str(row["Report"])
             answer = send_message(report, base_url, prompt_id)
             print(f"ID {row['ID']} LLM answer:\n{answer}\n---")
-            lesions = parse_answer(answer)
+            lesions = parse_answer(answer, prompt_id)
 
             if not lesions:
+                empty_row = {field: "U" for field in schema["output_fields"]}
+                empty_row["type"] = "No lesions mentioned"
                 writer.writerow(
                     {
                         "ID": row["ID"],
                         "Lesion Index": 0,
-                        "type": "No lesions mentioned",
-                        "certainty": "U",
-                        "size": "U",
-                        "structure": "U",
-                        "lateralization": "U",
-                        "ventricle_details": "U",
-                        "severity_phe": "U",
-                        "artifacts": "U",
+                        **empty_row,
                         "DNN Answer": answer,
                         "Report": report,
                     }
