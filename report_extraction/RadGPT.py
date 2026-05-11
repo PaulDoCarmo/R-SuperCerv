@@ -107,6 +107,63 @@ USER_PROMPT_2 = (
     "If you are sure there is no hemorrhage/edema, reply with: \"No lesions mentioned.\""
 )
 
+USER_PROMPT_3 = (
+    "Instructions: The radiology report below describes intracranial hemorrhages "
+    "(ICH, IVH, SDH, etc.) and associated findings like perihematomal edema (PHE).\n\n"
+    "Read the report carefully. Your task is to list the types, certainty of lesion type, "
+    "sizes, locations (structure and lateralisation) of all lesions/findings in the report.\n\n"
+    "Fill out the template below, using one line per lesion (you may add or remove lines from "
+    "the template):\n"
+    "   lesion 1: type = _; certainty = _; size = _; structure = _; lateralization = _;\n"
+    "   lesion 2:  type = _; certainty = _; size = _; structure = _; lateralization = _;\n\n"
+    "If you are absolutely sure the report mentions no lesion, do not use the template. "
+    "Instead, reply with: 'No lesions mentioned.' and justify why you are sure the report "
+    "mentions no lesion.\n\n"
+    "The report is in French but the output must be 100% in English. Translate anatomical terms "
+    "(e.g., \"tronc cerebral\" -> \"Brainstem\").\n\n"
+    "Consider the following instructions :\n\n"
+    "A - Types of Lesions:\n"
+    "- ICH: Intracerebral/Intraparenchymal hemorrhage (Hematome/Hemorragie dans le parenchyme).\n"
+    "- IVH: Intraventricular hemorrhage (Deversement/Inondation dans les ventricules).\n"
+    "- PHE: Perihematomal Edema (Oedeme vasogene au pourtour).\n"
+    "- SAH/SDH/EDH: Subarachnoid, Subdural, or Epidural hemorrhages.\n\n"
+    "B - Specific Column Logic:\n"
+    "1. size:\n"
+    "   - For ICH: Always look for dimensions (e.g., 4.3 x 2.0 cm).\n"
+    "   - For IVH: Use \"U\" unless a specific measurement or any qualitative indication is "
+    "given.\n"
+    "   - For PHE : Put the severity (\"Mild\", \"Moderate\", \"Severe\").\n"
+    "   - You MUST write the units (cm or mm) as found in the text. If not specified, assume mm.\n"
+    "   - If no numbers: use 'tiny' (minime/trace), 'small' (petite), 'large' "
+    "(volumineuse/importante).\n"
+    "   - Use \"U\" if totally unknown.\n\n"
+    "2. structure :\n"
+    "- For ICH/SAH/SDH/EDH: The brain lobe or region. Use standard names.\n"
+    "- For IVH: The specific ventricle name (e.g., V3, V4, Corne occipitale) if provided\n"
+    "- For PHE: The region it surrounds.\n"
+    "- Use \"U\" if unknown.\n"
+    "Extraction rules for structures :\n"
+    "- The structure column must ONLY contain the anatomical name (e.g., \"Frontal\", "
+    "\"Thalamus\", \"V3\"). The side (Left, Right) MUST be moved to the lateralization column.\n"
+    "Example: \"Lenticulaire gauche\" -> structure: Lenticular; lateralization: Left.\n"
+    "- Generate one line per structure. If a lesion/finding is \"Frontal et Parietal\", you MUST "
+    "generate two lines: one for Frontal and one for Parietal. If a report mentions multiple "
+    "distinct ICH foci (e.g., \"une frontale gauche\" and \"second foyer temporal\"), create two "
+    "separate entries for ICH.\n"
+    "3. Lateralization: Must be \"Left\", \"Right\", \"Bilateral\", \"Median\", or \"U\" if unknown.\n"
+    "4. Certainty :\n"
+    "Certainty of the lesion type, according to the report. If a report mentions a lesion type "
+    "in the findings, history, or impressions, without demonstrating uncertainty, say certainty "
+    "= certain.\n"
+    "If the report expresses strong confidence in lesion type, say certainty = high.\n"
+    "If the report mentions a lesion type but expresses significant uncertainty about it, say "
+    "certainty = low.\n"
+    "C - Justification:\n"
+    "Besides filling the template, justify your answer, carefully mentioning each section of "
+    "the report if present: history, findings, and impressions.\n"
+    "Explain from which sentences you got each size, location, and type."
+)
+
 _CLIENT = None
 _MODEL = None
 
@@ -154,6 +211,15 @@ def get_prompt_schema(prompt_id: int) -> Dict[str, object]:
             "structure",
             "lateralization",
             "artifacts",
+        ]
+        key_aliases = {}
+    elif prompt_id == 3:
+        output_fields = [
+            "type",
+            "certainty",
+            "size",
+            "structure",
+            "lateralization",
         ]
         key_aliases = {}
     else:
