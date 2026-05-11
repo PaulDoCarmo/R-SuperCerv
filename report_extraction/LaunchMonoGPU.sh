@@ -32,7 +32,7 @@ SCRIPT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 cd "$SCRIPT_DIR"
 
 DATA_PATH="${1:-/home/pauldcrm/links/scratch/R-SuperCerv/report_extraction/reports.csv}"
-SAVE_PATH="${2:-/home/pauldcrm/links/scratch/R-SuperCerv/report_extraction/results.csv}"
+SAVE_PATH="${2:-/home/pauldcrm/links/scratch/R-SuperCerv/report_extraction/raw/results.csv}"
 LLM_SIZE="${3:-large}"
 BASE_GPU="${4:-0}"
 TOP_GPU_USAGE="${5:-0.9}"

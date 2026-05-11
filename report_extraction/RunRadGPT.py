@@ -32,7 +32,8 @@ def main() -> int:
     data = load_data(args.data_path)
     data = data.dropna(subset=["ID", "Report"])
 
-    save_dir = os.path.dirname(args.save_path)
+    save_root = os.path.dirname(args.save_path)
+    save_dir = os.path.join(save_root, "raw")
     save_name = os.path.basename(args.save_path)
     prompt_dir = os.path.join(save_dir, f"prompt{args.prompt_id}")
     os.makedirs(prompt_dir, exist_ok=True)
