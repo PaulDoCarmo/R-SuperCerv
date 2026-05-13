@@ -39,9 +39,7 @@ def main() -> int:
     args = parser.parse_args()
 
     df = pd.read_csv(args.input)
-    cols_to_drop = [c for c in ["DNN Answer", "Report"] if c in df.columns]
-    if cols_to_drop:
-        df = df.drop(columns=cols_to_drop)
+    df = drop_useless_columns(df)
 
     output_path = build_output_path(args.input, args.output_root)
     df.to_csv(output_path, index=False)
@@ -51,3 +49,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+def drop_useless_columns(df: pd.DataFrame) -> pd.DataFrame:
+    cols_to_drop = [c for c in ["DNN Answer", "Report"] if c in df.columns]
+    return df.drop(columns=cols_to_drop)
+
+
