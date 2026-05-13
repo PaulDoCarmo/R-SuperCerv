@@ -77,6 +77,13 @@ def compute_any_true(df: pd.DataFrame, columns: Iterable[str]) -> pd.Series:
     return bool_frame.any(axis=1)
 
 
+def compute_all_false(df: pd.DataFrame, columns: Iterable[str]) -> pd.Series:
+    bool_frame = coerce_bool_frame(df, columns)
+    if bool_frame.empty:
+        return pd.Series([True] * len(df), index=df.index)
+    return ~bool_frame.any(axis=1)
+
+
 def compute_presence_with_none(
     df: pd.DataFrame,
     columns: Iterable[str],
@@ -90,8 +97,33 @@ def compute_presence_with_none(
     return (~none_series) & compute_any_true(df, columns)
 
 
+def compute_multi_label(
+    df: pd.DataFrame,
+    columns: Iterable[str],
+    label_prefix: str,
+) -> pd.Series:
+    bool_frame = coerce_bool_frame(df, columns)
+    if bool_frame.empty:
+        return pd.Series([None] * len(df), index=df.index)
+
+    labels = [name.split(label_prefix, 1)[1] for name in columns]
+
+    def join_labels(row: pd.Series) -> str | None:
+        chosen = [label for label, is_true in zip(labels, row) if is_true]
+        if not chosen:
+            return None
+        return "/".join(chosen)
+
+    return bool_frame.apply(join_labels, axis=1)
+
+
+def compute_phe_intensity(df: pd.DataFrame, columns: Iterable[str]) -> pd.Series:
+    return compute_multi_label(df, columns, "phe_")
+
+
 def build_output_dataframe(
     df: pd.DataFrame,
+    boolean_columns: Iterable[str],
     loc_columns: list[str],
     ivh_columns: list[str],
     phe_columns: Iterable[str],
@@ -105,9 +137,13 @@ def build_output_dataframe(
     output_df = pd.DataFrame(
         {
             "ID": df.get("ID", ""),
+            "all_booleans_false": compute_all_false(df, boolean_columns),
             "ich_presence": ich_presence,
-            "phe_presence": compute_presence_with_none(df, phe_columns, PHE_NONE_COLUMN),
             "ivh_presence": compute_presence_with_none(df, ivh_columns, IVH_NONE_COLUMN),
+            "phe_presence": compute_presence_with_none(df, phe_columns, PHE_NONE_COLUMN),
+            "ich_localisation": compute_multi_label(df, loc_columns, LOC_PREFIX),
+            "ivh_location": compute_multi_label(df, ivh_columns, IVH_PREFIX),
+            "phe_intensity": compute_phe_intensity(df, phe_columns),
         }
     )
     return output_df
@@ -126,6 +162,7 @@ def main() -> int:
 
     df = load_dataframe(input_csv)
 
+    boolean_columns = [name for name in df.columns if name != "ID"]
     loc_columns = find_columns_by_prefix(df.columns, LOC_PREFIX)
     ivh_columns = find_columns_by_prefix(
         df.columns,
@@ -137,6 +174,7 @@ def main() -> int:
 
     output_df = build_output_dataframe(
         df,
+        boolean_columns,
         loc_columns,
         ivh_columns,
         phe_columns,
