@@ -28,6 +28,11 @@ def build_output_path(input_path: str, output_root: str) -> str:
     return os.path.join(prompt_dir, out_name)
 
 
+def drop_useless_columns(df: pd.DataFrame) -> pd.DataFrame:
+    cols_to_drop = [c for c in ["DNN Answer", "Report"] if c in df.columns]
+    return df.drop(columns=cols_to_drop)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Post-process RadGPT results.")
     parser.add_argument("--input", required=True, help="Input CSV file")
@@ -49,9 +54,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-def drop_useless_columns(df: pd.DataFrame) -> pd.DataFrame:
-    cols_to_drop = [c for c in ["DNN Answer", "Report"] if c in df.columns]
-    return df.drop(columns=cols_to_drop)
 
 
