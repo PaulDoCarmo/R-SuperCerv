@@ -48,11 +48,11 @@ def build_output_paths(
 ) -> tuple[str, str]:
     prompt_id = detect_prompt_id(formatted_results_path)
     model_name = detect_model_name(formatted_results_path)
-    output_dir = os.path.join(output_root, f"prompt{prompt_id}", model_name, "ivh_presence")
+    output_dir = os.path.join(output_root, f"prompt{prompt_id}", model_name, "phe_presence")
     os.makedirs(output_dir, exist_ok=True)
 
-    csv_name = f"metrics_{model_name}_prompt{prompt_id}_ivh_presence{suffix}.csv"
-    txt_name = f"errors_{model_name}_prompt{prompt_id}_ivh_presence{suffix}.txt"
+    csv_name = f"metrics_{model_name}_prompt{prompt_id}_phe_presence{suffix}.csv"
+    txt_name = f"errors_{model_name}_prompt{prompt_id}_phe_presence{suffix}.txt"
     return os.path.join(output_dir, csv_name), os.path.join(output_dir, txt_name)
 
 
@@ -74,15 +74,15 @@ def compute_metrics_for_file(
 ) -> None:
     res_df = pd.read_csv(formatted_results_path)
 
-    if "ID" not in gt_df.columns or "ivh_presence" not in gt_df.columns:
-        raise ValueError("Ground truth must contain columns 'ID' and 'ivh_presence'.")
+    if "ID" not in gt_df.columns or "phe_presence" not in gt_df.columns:
+        raise ValueError("Ground truth must contain columns 'ID' and 'phe_presence'.")
     if ignore_all_false and "all_booleans_false" not in gt_df.columns:
         raise ValueError("Ground truth must contain column 'all_booleans_false'.")
     if "ID" not in res_df.columns or "type" not in res_df.columns:
         raise ValueError("Formatted results must contain columns 'ID' and 'type'.")
 
-    ivh_mask = res_df["type"].astype(str).str.upper() == "IVH"
-    ivh_ids = set(res_df.loc[ivh_mask, "ID"].dropna().astype(str))
+    phe_mask = res_df["type"].astype(str).str.strip().str.upper() == "PHE"
+    phe_ids = set(res_df.loc[phe_mask, "ID"].dropna().astype(str))
 
     ignored_ids = []
     eval_df = gt_df
@@ -96,15 +96,15 @@ def compute_metrics_for_file(
 
     for _, row in eval_df.iterrows():
         sample_id = str(row["ID"])
-        gt_ivh = parse_bool(row["ivh_presence"])
-        pred_ivh = sample_id in ivh_ids
+        gt_phe = parse_bool(row["phe_presence"])
+        pred_phe = sample_id in phe_ids
 
-        if gt_ivh and pred_ivh:
+        if gt_phe and pred_phe:
             tp += 1
-        elif gt_ivh and not pred_ivh:
+        elif gt_phe and not pred_phe:
             fn += 1
             errors.append((sample_id, "true", "false"))
-        elif not gt_ivh and pred_ivh:
+        elif not gt_phe and pred_phe:
             fp += 1
             errors.append((sample_id, "false", "true"))
         else:
@@ -132,14 +132,16 @@ def compute_metrics_for_file(
     )
 
     suffix = "_all_false_ignored" if ignore_all_false else ""
-    output_csv, output_txt = build_output_paths(formatted_results_path, output_root, suffix)
+    output_csv, output_txt = build_output_paths(
+        formatted_results_path, output_root, suffix
+    )
     metrics_df.to_csv(output_csv, index=False)
 
     gt_ids = set(eval_df["ID"].dropna().astype(str))
-    extra_pred_ids = sorted(ivh_ids - gt_ids)
+    extra_pred_ids = sorted(phe_ids - gt_ids)
 
     with open(output_txt, "w", encoding="utf-8") as handle:
-        handle.write("IVH presence errors\n")
+        handle.write("PHE presence errors\n")
         handle.write(f"tp={tp} fp={fp} fn={fn} tn={tn}\n")
         handle.write("\n")
         handle.write("ID\tground_truth\tprediction\n")
@@ -147,7 +149,7 @@ def compute_metrics_for_file(
             handle.write(f"{sample_id}\t{gt_value}\t{pred_value}\n")
         if extra_pred_ids:
             handle.write("\n")
-            handle.write("Predicted IVH IDs missing from ground truth\n")
+            handle.write("Predicted PHE IDs missing from ground truth\n")
             for sample_id in extra_pred_ids:
                 handle.write(f"{sample_id}\n")
         if ignored_ids:
@@ -161,7 +163,7 @@ def compute_metrics_for_file(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Compute IVH presence metrics.")
+    parser = argparse.ArgumentParser(description="Compute PHE presence metrics.")
     parser.add_argument("--ground_truth", required=True, help="Ground truth CSV file")
     parser.add_argument("--formatted_results", required=True, help="Formatted results CSV file")
     parser.add_argument(

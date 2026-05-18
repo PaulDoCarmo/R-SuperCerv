@@ -1,6 +1,7 @@
 import argparse
 import os
 import re
+import unicodedata
 
 import pandas as pd
 
@@ -37,6 +38,31 @@ IVH_STRUCTURES = {
     "corne": "ivh_lateral",
 }
 
+PHE_SIZE_MAPPING = {
+    "mild": "mild",
+    "gret": "mild",
+    "discret": "mild",
+    "small": "mild",
+    "tiny": "mild",
+    "minime": "mild",
+    "minimal": "mild",
+    "leger": "mild",
+    "peu": "mild",
+    "moderate": "moderate",
+    "modere": "moderate",
+    "medium": "moderate",
+    "moyen": "moderate",
+    "severe": "severe",
+    "large": "severe",
+    "important": "severe",
+    "massive": "severe",
+    "massif": "severe",
+    "extensive": "severe",
+    "extensif": "severe",
+    "volumineux": "severe",
+    "grand": "severe",
+}
+
 
 def detect_prompt_id(path: str) -> str:
     match = re.search(r"/prompt(\d+)/", path)
@@ -63,6 +89,17 @@ def build_output_path(input_path: str, output_root: str) -> str:
 
     out_name = f"{stem}_formated{ext}"
     return os.path.join(prompt_dir, out_name)
+
+
+def list_csv_files(input_path: str) -> list[str]:
+    if os.path.isdir(input_path):
+        entries = [
+            os.path.join(input_path, name)
+            for name in os.listdir(input_path)
+            if name.lower().endswith(".csv")
+        ]
+        return sorted(entries)
+    return [input_path]
 
 
 def keep_only_ich_ivh_phe(df: pd.DataFrame) -> pd.DataFrame:
@@ -146,6 +183,33 @@ def map_ivh_location(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def map_phe_severity(df: pd.DataFrame) -> pd.DataFrame:
+    if "type" not in df.columns or "size" not in df.columns:
+        return df
+
+    def normalize_text(text: str) -> str:
+        normalized = unicodedata.normalize("NFKD", text)
+        return "".join(ch for ch in normalized if not unicodedata.combining(ch)).lower()
+
+    def map_size(value: object) -> object:
+        if pd.isna(value):
+            return value
+
+        raw = str(value)
+        lowered = normalize_text(raw)
+        mapped = []
+        for key, target in PHE_SIZE_MAPPING.items():
+            if key in lowered and target not in mapped:
+                mapped.append(target)
+
+        return "-".join(mapped) if mapped else raw
+
+    df = df.copy()
+    mask = df["type"].astype(str).str.upper() == "PHE"
+    df.loc[mask, "size"] = df.loc[mask, "size"].apply(map_size)
+    return df
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Format metrics from post-processed CSVs.")
     parser.add_argument("--input", required=True, help="Input CSV file")
@@ -176,6 +240,11 @@ def main() -> int:
         help="Map IVH structure values to ventricular locations",
     )
     parser.add_argument(
+        "--map_phe_severity",
+        action="store_true",
+        help="Map PHE size values to severity labels",
+    )
+    parser.add_argument(
         "--all",
         action="store_true",
         help="Run all operations",
@@ -186,25 +255,34 @@ def main() -> int:
         args.keep_only_ich_ivh_phe = True
         args.map_ich_location = True
         args.map_ivh_location = True
+        args.map_phe_severity = True
         args.group_by_lesion_type = True
 
-    df = pd.read_csv(args.input)
+    input_files = list_csv_files(args.input)
+    if not input_files:
+        raise ValueError(f"No CSV files found in {args.input}")
 
-    if args.keep_only_ich_ivh_phe:
-        df = keep_only_ich_ivh_phe(df)
+    for input_file in input_files:
+        df = pd.read_csv(input_file)
 
-    if args.map_ich_location:
-        df = map_ich_location(df)
+        if args.keep_only_ich_ivh_phe:
+            df = keep_only_ich_ivh_phe(df)
 
-    if args.map_ivh_location:
-        df = map_ivh_location(df)
+        if args.map_ich_location:
+            df = map_ich_location(df)
 
-    if args.group_by_lesion_type:
-        df = group_by_lesion_type(df)
+        if args.map_ivh_location:
+            df = map_ivh_location(df)
 
-    output_path = build_output_path(args.input, args.output_root)
-    df.to_csv(output_path, index=False)
-    print(f"Saved to {output_path}")
+        if args.map_phe_severity:
+            df = map_phe_severity(df)
+
+        if args.group_by_lesion_type:
+            df = group_by_lesion_type(df)
+
+        output_path = build_output_path(input_file, args.output_root)
+        df.to_csv(output_path, index=False)
+        print(f"Saved to {output_path}")
     return 0
 
 

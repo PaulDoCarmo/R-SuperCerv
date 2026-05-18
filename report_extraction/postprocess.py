@@ -28,6 +28,17 @@ def build_output_path(input_path: str, output_root: str) -> str:
     return os.path.join(prompt_dir, out_name)
 
 
+def list_csv_files(input_path: str) -> list[str]:
+    if os.path.isdir(input_path):
+        entries = [
+            os.path.join(input_path, name)
+            for name in os.listdir(input_path)
+            if name.lower().endswith(".csv")
+        ]
+        return sorted(entries)
+    return [input_path]
+
+
 def drop_useless_columns(df: pd.DataFrame) -> pd.DataFrame:
     cols_to_drop = [c for c in ["DNN Answer", "Report"] if c in df.columns]
     return df.drop(columns=cols_to_drop)
@@ -43,12 +54,17 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    df = pd.read_csv(args.input)
-    df = drop_useless_columns(df)
+    input_files = list_csv_files(args.input)
+    if not input_files:
+        raise ValueError(f"No CSV files found in {args.input}")
 
-    output_path = build_output_path(args.input, args.output_root)
-    df.to_csv(output_path, index=False)
-    print(f"Saved to {output_path}")
+    for input_file in input_files:
+        df = pd.read_csv(input_file)
+        df = drop_useless_columns(df)
+
+        output_path = build_output_path(input_file, args.output_root)
+        df.to_csv(output_path, index=False)
+        print(f"Saved to {output_path}")
     return 0
 
 
