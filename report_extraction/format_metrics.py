@@ -28,6 +28,8 @@ IVH_STRUCTURES = {
     "troisieme": "ivh_third",
     "fourth": "ivh_fourth",
     "quatrieme": "ivh_fourth",
+    "V3": "ivh_third",
+    "V4": "ivh_fourth",
     "lateral": "ivh_lateral",
     "occipital": "ivh_lateral",
     "frontal": "ivh_lateral",

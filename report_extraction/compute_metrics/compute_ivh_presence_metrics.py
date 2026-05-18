@@ -32,14 +32,16 @@ def detect_model_name(path: str) -> str:
     return "U"
 
 
-def build_output_paths(formatted_results_path: str, output_root: str) -> tuple[str, str]:
+def build_output_paths(
+    formatted_results_path: str, output_root: str, suffix: str = ""
+) -> tuple[str, str]:
     prompt_id = detect_prompt_id(formatted_results_path)
     model_name = detect_model_name(formatted_results_path)
     output_dir = os.path.join(output_root, f"prompt{prompt_id}", model_name, "ivh_presence")
     os.makedirs(output_dir, exist_ok=True)
 
-    csv_name = f"metrics_{model_name}_prompt{prompt_id}_ivh_presence.csv"
-    txt_name = f"errors_{model_name}_prompt{prompt_id}_ivh_presence.txt"
+    csv_name = f"metrics_{model_name}_prompt{prompt_id}_ivh_presence{suffix}.csv"
+    txt_name = f"errors_{model_name}_prompt{prompt_id}_ivh_presence{suffix}.txt"
     return os.path.join(output_dir, csv_name), os.path.join(output_dir, txt_name)
 
 
@@ -62,6 +64,11 @@ def main() -> int:
         default="/home/pauldcrm/links/scratch/R-SuperCerv/report_extraction/metrics",
         help="Root output directory",
     )
+    parser.add_argument(
+        "--ignore_all_false",
+        action="store_true",
+        help="Ignore rows with all_booleans_false == true in ground truth",
+    )
     args = parser.parse_args()
 
     gt_df = pd.read_csv(args.ground_truth)
@@ -69,11 +76,19 @@ def main() -> int:
 
     if "ID" not in gt_df.columns or "ivh_presence" not in gt_df.columns:
         raise ValueError("Ground truth must contain columns 'ID' and 'ivh_presence'.")
+    if args.ignore_all_false and "all_booleans_false" not in gt_df.columns:
+        raise ValueError("Ground truth must contain column 'all_booleans_false'.")
     if "ID" not in res_df.columns or "type" not in res_df.columns:
         raise ValueError("Formatted results must contain columns 'ID' and 'type'.")
 
     ivh_mask = res_df["type"].astype(str).str.upper() == "IVH"
     ivh_ids = set(res_df.loc[ivh_mask, "ID"].dropna().astype(str))
+
+    ignored_ids = []
+    if args.ignore_all_false:
+        ignore_mask = gt_df["all_booleans_false"].apply(parse_bool)
+        ignored_ids = gt_df.loc[ignore_mask, "ID"].dropna().astype(str).tolist()
+        gt_df = gt_df.loc[~ignore_mask].copy()
 
     tp = fp = fn = tn = 0
     errors = []
@@ -115,7 +130,10 @@ def main() -> int:
         ]
     )
 
-    output_csv, output_txt = build_output_paths(args.formatted_results, args.output_root)
+    suffix = "_all_false_ignored" if args.ignore_all_false else ""
+    output_csv, output_txt = build_output_paths(
+        args.formatted_results, args.output_root, suffix
+    )
     metrics_df.to_csv(output_csv, index=False)
 
     gt_ids = set(gt_df["ID"].dropna().astype(str))
@@ -132,6 +150,11 @@ def main() -> int:
             handle.write("\n")
             handle.write("Predicted IVH IDs missing from ground truth\n")
             for sample_id in extra_pred_ids:
+                handle.write(f"{sample_id}\n")
+        if ignored_ids:
+            handle.write("\n")
+            handle.write("Ignored IDs (all_booleans_false == true)\n")
+            for sample_id in ignored_ids:
                 handle.write(f"{sample_id}\n")
 
     print(f"Saved metrics to {output_csv}")
