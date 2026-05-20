@@ -25,17 +25,16 @@ MAPPING_ANATOMIQUE = {
 }
 
 IVH_STRUCTURES = {
-    "third": "ivh_third",
-    "troisieme": "ivh_third",
-    "fourth": "ivh_fourth",
-    "quatrieme": "ivh_fourth",
-    "V3": "ivh_third",
-    "V4": "ivh_fourth",
-    "lateral": "ivh_lateral",
-    "occipital": "ivh_lateral",
-    "frontal": "ivh_lateral",
-    "ventricle": "ivh_lateral",
-    "corne": "ivh_lateral",
+    "third": "third",
+    "troisieme": "third",
+    "fourth": "fourth",
+    "quatrieme": "fourth",
+    "v3": "third",
+    "v4": "fourth",
+    "lateral": "lateral",
+    "occipital": "lateral",
+    "frontal": "lateral",
+    "corne": "lateral",
 }
 
 PHE_SIZE_MAPPING = {
@@ -163,15 +162,29 @@ def map_ivh_location(df: pd.DataFrame) -> pd.DataFrame:
             if key in lowered and target not in mapped:
                 mapped.append(target)
 
+        has_ventricle = "ventricle" in lowered
+        has_ventricles = "ventricles" in lowered
+        has_lateral_term = any(
+            term in lowered for term in ["lateral", "occipital", "frontal", "corne"]
+        )
+        if (has_ventricle or has_ventricles) and "lateral" not in mapped:
+            if has_lateral_term or (not mapped and (has_ventricle or has_ventricles)):
+                mapped.append("lateral")
+
         if not mapped:
             return text
 
         lat = str(lateralization).strip().lower()
-        if "ivh_lateral" in mapped:
+        if "lateral" in mapped:
             if lat == "left":
-                mapped = ["ivh_lateral_left" if m == "ivh_lateral" else m for m in mapped]
+                mapped = ["lateral_left" if m == "lateral" else m for m in mapped]
             elif lat == "right":
-                mapped = ["ivh_lateral_right" if m == "ivh_lateral" else m for m in mapped]
+                mapped = ["lateral_right" if m == "lateral" else m for m in mapped]
+            elif lat == "bilateral":
+                mapped = [
+                    "lateral_left-lateral_right" if m == "lateral" else m
+                    for m in mapped
+                ]
 
         return "-".join(mapped)
 
