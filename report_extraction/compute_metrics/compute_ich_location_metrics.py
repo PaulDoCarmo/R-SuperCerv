@@ -52,12 +52,12 @@ def build_output_paths(
     prompt_id = detect_prompt_id(formatted_results_path)
     model_name = detect_model_name(formatted_results_path)
     output_dir = os.path.join(
-        output_root, f"prompt{prompt_id}", model_name, "ivh_location", mode
+        output_root, f"prompt{prompt_id}", model_name, "ich_location", mode
     )
     os.makedirs(output_dir, exist_ok=True)
 
-    csv_name = f"metrics_{model_name}_prompt{prompt_id}_ivh_location_{mode}{suffix}.csv"
-    txt_name = f"errors_{model_name}_prompt{prompt_id}_ivh_location_{mode}{suffix}.txt"
+    csv_name = f"metrics_{model_name}_prompt{prompt_id}_ich_location_{mode}{suffix}.csv"
+    txt_name = f"errors_{model_name}_prompt{prompt_id}_ich_location_{mode}{suffix}.txt"
     return os.path.join(output_dir, csv_name), os.path.join(output_dir, txt_name)
 
 
@@ -102,18 +102,18 @@ def compute_strict_metrics(
 
     for _, row in eval_df.iterrows():
         sample_id = str(row["ID"])
-        gt_locations = extract_locations([row["ivh_location"]])
+        gt_locations = extract_locations([row["ich_location"]])
         total += 1
 
-        ivh_rows = res_df[
+        ich_rows = res_df[
             (res_df["ID"].astype(str) == sample_id)
-            & (res_df["type"].astype(str).str.strip().str.upper() == "IVH")
+            & (res_df["type"].astype(str).str.strip().str.upper() == "ICH")
         ]
-        if ivh_rows.empty:
+        if ich_rows.empty:
             errors_no_detection.append((sample_id, "/".join(gt_locations)))
             continue
 
-        pred_locations = extract_locations(ivh_rows["structure"].tolist())
+        pred_locations = extract_locations(ich_rows["structure"].tolist())
         if set(gt_locations) == set(pred_locations):
             correct += 1
         else:
@@ -146,19 +146,19 @@ def compute_flexible_metrics(
 
     for _, row in eval_df.iterrows():
         sample_id = str(row["ID"])
-        gt_locations = extract_locations([row["ivh_location"]])
+        gt_locations = extract_locations([row["ich_location"]])
         total += 1
 
-        ivh_rows = res_df[
+        ich_rows = res_df[
             (res_df["ID"].astype(str) == sample_id)
-            & (res_df["type"].astype(str).str.strip().str.upper() == "IVH")
+            & (res_df["type"].astype(str).str.strip().str.upper() == "ICH")
         ]
-        if ivh_rows.empty:
+        if ich_rows.empty:
             no_detection += 1
             errors_no_detection.append((sample_id, "/".join(gt_locations)))
             continue
 
-        pred_locations = extract_locations(ivh_rows["structure"].tolist())
+        pred_locations = extract_locations(ich_rows["structure"].tolist())
         gt_set = set(gt_locations)
         pred_set = set(pred_locations)
         intersection = gt_set & pred_set
@@ -209,9 +209,9 @@ def compute_metrics_for_file(
 ) -> None:
     res_df = pd.read_csv(formatted_results_path)
 
-    required_gt = {"ID", "ivh_presence", "ivh_location"}
+    required_gt = {"ID", "ich_location"}
     if not required_gt.issubset(gt_df.columns):
-        raise ValueError("Ground truth must contain columns 'ID', 'ivh_presence', and 'ivh_location'.")
+        raise ValueError("Ground truth must contain columns 'ID' and 'ich_location'.")
     if ignore_all_false and "all_booleans_false" not in gt_df.columns:
         raise ValueError("Ground truth must contain column 'all_booleans_false'.")
     if "ID" not in res_df.columns or "type" not in res_df.columns or "structure" not in res_df.columns:
@@ -224,7 +224,7 @@ def compute_metrics_for_file(
         ignored_ids = gt_df.loc[ignore_mask, "ID"].dropna().astype(str).tolist()
         eval_df = gt_df.loc[~ignore_mask].copy()
 
-    eval_df = eval_df[eval_df["ivh_location"].apply(normalize_location) != ""].copy()
+    eval_df = eval_df[eval_df["ich_location"].apply(normalize_location) != ""].copy()
 
     suffix = "_all_false_ignored" if ignore_all_false else ""
 
@@ -251,12 +251,12 @@ def compute_metrics_for_file(
         metrics_df.to_csv(output_csv, index=False)
 
         with open(output_txt, "w", encoding="utf-8") as handle:
-            handle.write("IVH location errors (strict)\n")
+            handle.write("ICH location errors (strict)\n")
             handle.write(
                 f"total={total} correct={correct} no_detection={no_detection} accuracy={accuracy}\n"
             )
             handle.write("\n")
-            handle.write("Errors - no IVH detected\n")
+            handle.write("Errors - no ICH detected\n")
             handle.write("ID\tground_truth_locations\n")
             for sample_id, gt_locations in errors_no_detection:
                 handle.write(f"{sample_id}\t{gt_locations}\n")
@@ -305,7 +305,7 @@ def compute_metrics_for_file(
         metrics_df.to_csv(output_csv, index=False)
 
         with open(output_txt, "w", encoding="utf-8") as handle:
-            handle.write("IVH location errors (flexible)\n")
+            handle.write("ICH location errors (flexible)\n")
             handle.write(
                 "total={total} no_detection={no_detection} avg_gt_coverage={avg_gt_coverage} "
                 "avg_pred_precision={avg_pred_precision} avg_jaccard={avg_jaccard}\n".format(
@@ -317,7 +317,7 @@ def compute_metrics_for_file(
                 )
             )
             handle.write("\n")
-            handle.write("Errors - no IVH detected\n")
+            handle.write("Errors - no ICH detected\n")
             handle.write("ID\tground_truth_locations\n")
             for sample_id, gt_locations in errors_no_detection:
                 handle.write(f"{sample_id}\t{gt_locations}\n")
@@ -348,7 +348,7 @@ def compute_metrics_for_file(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Compute IVH location metrics.")
+    parser = argparse.ArgumentParser(description="Compute ICH location metrics.")
     parser.add_argument("--ground_truth", required=True, help="Ground truth CSV file")
     parser.add_argument("--formatted_results", required=True, help="Formatted results CSV file")
     parser.add_argument(
@@ -364,12 +364,12 @@ def main() -> int:
     parser.add_argument(
         "--strict",
         action="store_true",
-        help="Compute strict IVH location metrics",
+        help="Compute strict ICH location metrics",
     )
     parser.add_argument(
         "--flexible",
         action="store_true",
-        help="Compute flexible IVH location metrics",
+        help="Compute flexible ICH location metrics",
     )
     parser.add_argument(
         "--all_modes",

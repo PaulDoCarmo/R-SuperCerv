@@ -7,21 +7,21 @@ import pandas as pd
 
 
 MAPPING_ANATOMIQUE = {
-    "front": "loc_frontal",
-    "pariet": "loc_parietal",
-    "occipit": "loc_occipital",
-    "tempor": "loc_temporal",
-    "insula": "loc_insular",
-    "lentic": "loc_lentiform",
-    "lentif": "loc_lentiform",
-    "putamen": "loc_lentiform",
-    "caudate": "loc_caudate",
-    "thalam": "loc_thalamus",
-    "cerebel": "loc_cerebellum",
-    "brainstem": "loc_brainstem",
-    "tronc": "loc_brainstem",
-    "pons": "loc_brainstem",
-    "mesencephalon": "loc_brainstem",
+    "front": "frontal",
+    "pariet": "parietal",
+    "occipit": "occipital",
+    "tempor": "temporal",
+    "insula": "insular",
+    "lentic": "lentiform",
+    "lentif": "lentiform",
+    "putamen": "lentiform",
+    "caudate": "caudate",
+    "thalam": "thalamus",
+    "cerebel": "cerebellum",
+    "brainstem": "brainstem",
+    "tronc": "brainstem",
+    "pons": "brainstem",
+    "mesencephalon": "brainstem",
 }
 
 IVH_STRUCTURES = {

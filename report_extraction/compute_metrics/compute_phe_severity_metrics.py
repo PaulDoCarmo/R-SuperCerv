@@ -105,7 +105,7 @@ def compute_metrics_for_file(
         ignored_ids = gt_df.loc[ignore_mask, "ID"].dropna().astype(str).tolist()
         eval_df = gt_df.loc[~ignore_mask].copy()
 
-    eval_df = eval_df[eval_df["phe_presence"].apply(parse_bool)].copy()
+    eval_df = eval_df[eval_df["phe_intensity"].apply(normalize_intensity) != ""].copy()
 
     total = 0
     correct = 0
