@@ -114,7 +114,7 @@ done
 echo "vLLM ready. Running inference..."
 JOB_TAG="${SLURM_JOB_ID:-local}"
 rm -f "$LOG_DIR/LLM_${base}_${JOB_TAG}.log"
-python RunRadGPT.py \
+python LLM_inference/Run_LLM_inference.py \
   --port "$BASE_PORT" \
   --data_path "$DATA_PATH" \
   --save_path "$SAVE_PATH" \

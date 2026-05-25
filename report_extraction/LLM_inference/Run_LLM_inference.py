@@ -6,7 +6,7 @@ import argparse
 import os
 import pandas as pd
 
-import RadGPT as rgpt
+import LLM_inference as rgpt
 
 
 def load_data(path: str) -> pd.DataFrame:
