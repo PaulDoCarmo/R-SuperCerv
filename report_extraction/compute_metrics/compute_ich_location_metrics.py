@@ -147,9 +147,13 @@ def compute_metrics_for_file(
 ) -> None:
     res_df = pd.read_csv(formatted_results_path)
 
-    required_gt = {"ID", "ich_location"}
-    if not required_gt.issubset(gt_df.columns):
-        raise ValueError("Ground truth must contain columns 'ID' and 'ich_location'.")
+    if "ID" not in gt_df.columns:
+        raise ValueError("Ground truth must contain column 'ID'.")
+    if "ich_location" not in gt_df.columns:
+        if "ich_localisation" in gt_df.columns:
+            gt_df = gt_df.rename(columns={"ich_localisation": "ich_location"})
+        else:
+            raise ValueError("Ground truth must contain columns 'ID' and 'ich_location'.")
     if ignore_all_false and "all_booleans_false" not in gt_df.columns:
         raise ValueError("Ground truth must contain column 'all_booleans_false'.")
     if "ID" not in res_df.columns or "type" not in res_df.columns or "structure" not in res_df.columns:
