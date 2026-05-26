@@ -3,7 +3,7 @@ import re
 
 import pandas as pd
 
-from metrics_utils import build_output_paths, list_csv_files, parse_bool
+from metrics_utils import build_output_paths, list_csv_files
 
 DEFAULT_TOLERANCE_MM = 5.0
 
@@ -209,7 +209,6 @@ def compute_metrics_for_file(
     gt_df: pd.DataFrame,
     formatted_results_path: str,
     output_root: str,
-    ignore_all_false: bool,
     run_strict: bool,
     run_flexible: bool,
     tolerance_mm: float,
@@ -219,21 +218,12 @@ def compute_metrics_for_file(
     required_gt = {"ID", "size"}
     if not required_gt.issubset(gt_df.columns):
         raise ValueError("Ground truth must contain columns 'ID' and 'size'.")
-    if ignore_all_false and "all_booleans_false" not in gt_df.columns:
-        raise ValueError("Ground truth must contain column 'all_booleans_false'.")
     if "ID" not in res_df.columns or "type" not in res_df.columns or "size" not in res_df.columns:
         raise ValueError("Formatted results must contain columns 'ID', 'type', and 'size'.")
 
-    ignored_ids = []
-    eval_df = gt_df
-    if ignore_all_false:
-        ignore_mask = gt_df["all_booleans_false"].apply(parse_bool)
-        ignored_ids = gt_df.loc[ignore_mask, "ID"].dropna().astype(str).tolist()
-        eval_df = gt_df.loc[~ignore_mask].copy()
+    eval_df = gt_df[gt_df["size"].apply(normalize_text) != ""].copy()
 
-    eval_df = eval_df[eval_df["size"].apply(normalize_text) != ""].copy()
-
-    suffix = "_all_false_ignored" if ignore_all_false else ""
+    suffix = ""
 
     if run_strict:
         total, correct, no_detection, errors_no_detection, errors_mismatch = compute_strict_metrics(
@@ -277,12 +267,6 @@ def compute_metrics_for_file(
             handle.write("ID\tground_truth_sizes\tpredicted_sizes\n")
             for sample_id, gt_sizes, pred_sizes in errors_mismatch:
                 handle.write(f"{sample_id}\t{gt_sizes}\t{pred_sizes}\n")
-            if ignored_ids:
-                handle.write("\n")
-                handle.write("Ignored IDs (all_booleans_false == true)\n")
-                for sample_id in ignored_ids:
-                    handle.write(f"{sample_id}\n")
-
         print(f"Saved metrics to {output_csv}")
         print(f"Saved errors to {output_txt}")
 
@@ -351,12 +335,6 @@ def compute_metrics_for_file(
                 handle.write(
                     f"{sample_id}\t{gt_sizes}\t{pred_sizes}\t{missing_gt}\t{extra_pred}\t{per_id_scores}\n"
                 )
-            if ignored_ids:
-                handle.write("\n")
-                handle.write("Ignored IDs (all_booleans_false == true)\n")
-                for sample_id in ignored_ids:
-                    handle.write(f"{sample_id}\n")
-
         print(f"Saved metrics to {output_csv}")
         print(f"Saved errors to {output_txt}")
 
@@ -369,11 +347,6 @@ def main() -> int:
         "--output_root",
         default="/home/pauldcrm/links/scratch/R-SuperCerv/report_extraction/metrics",
         help="Root output directory",
-    )
-    parser.add_argument(
-        "--ignore_all_false",
-        action="store_true",
-        help="Ignore rows with all_booleans_false == true in ground truth",
     )
     parser.add_argument(
         "--tolerance_mm",
@@ -414,7 +387,6 @@ def main() -> int:
             gt_df=gt_df,
             formatted_results_path=formatted_file,
             output_root=args.output_root,
-            ignore_all_false=args.ignore_all_false,
             run_strict=run_strict,
             run_flexible=run_flexible,
             tolerance_mm=args.tolerance_mm,

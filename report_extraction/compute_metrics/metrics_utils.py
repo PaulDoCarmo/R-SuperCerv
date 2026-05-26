@@ -11,6 +11,9 @@ def detect_prompt_id(path: str) -> str:
     match = re.search(r"/prompt(\d+)/", path)
     if match:
         return match.group(1)
+    match = re.search(r"/prompt(\d+)$", path)
+    if match:
+        return match.group(1)
     match = re.search(r"_prompt(\d+)", os.path.basename(path))
     if match:
         return match.group(1)

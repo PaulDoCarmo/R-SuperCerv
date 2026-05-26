@@ -11,6 +11,7 @@ shift "$shift_count" || true
 
 IGNORE_ALL_FALSE=false
 TOLERANCE_MM=5
+ALL_PROMPTS=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -22,6 +23,10 @@ while [[ $# -gt 0 ]]; do
       TOLERANCE_MM="${2:-}"
       shift 2
       ;;
+    --all_prompts)
+      ALL_PROMPTS=true
+      shift
+      ;;
     *)
       echo "Unknown option: $1"
       exit 1
@@ -30,7 +35,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$RAW_INPUT" ]]; then
-  echo "Usage: $0 /path/to/raw/results_..._promptN.csv|/path/to/raw_dir [ground_truth_json.csv] [--ignore_all_false] [--tolerance_mm N]"
+  echo "Usage: $0 /path/to/raw/results_..._promptN.csv|/path/to/raw_dir [ground_truth_json.csv] [--ignore_all_false] [--tolerance_mm N] [--all_prompts]"
   exit 1
 fi
 
@@ -90,18 +95,30 @@ fi
 python "$SCRIPT_DIR/postprocess.py" \
   --input "$RAW_INPUT"
 
-for prompt_dir in "${POSTPROCESSED_ROOT}"/prompt*; do
-  if [[ -d "$prompt_dir" ]]; then
-    python "$SCRIPT_DIR/format_metrics.py" \
-      --input "$prompt_dir" \
-      --all
-  fi
-done
+if [[ "$ALL_PROMPTS" == "true" ]]; then
+  for prompt_dir in "${POSTPROCESSED_ROOT}"/prompt*; do
+    if [[ -d "$prompt_dir" ]]; then
+      python "$SCRIPT_DIR/format_metrics.py" \
+        --input "$prompt_dir" \
+        --all
+    fi
+  done
 
-for prompt_dir in "${FORMATTED_ROOT}"/prompt*; do
-  if [[ -d "$prompt_dir" ]]; then
-    "$RUN_ALL" "$prompt_dir" "$GROUND_TRUTH_JSON" "${COMMON_ARGS[@]}"
-  fi
-done
+  for prompt_dir in "${FORMATTED_ROOT}"/prompt*; do
+    if [[ -d "$prompt_dir" ]]; then
+      "$RUN_ALL" "$prompt_dir" "$GROUND_TRUTH_JSON" "${COMMON_ARGS[@]}"
+    fi
+  done
+else
+  PROMPT_DIR_NAME="$(basename "$RAW_INPUT")"
+  POSTPROCESSED_PATH="$POSTPROCESSED_ROOT/$PROMPT_DIR_NAME"
+  FORMATTED_PATH="$FORMATTED_ROOT/$PROMPT_DIR_NAME"
+
+  python "$SCRIPT_DIR/format_metrics.py" \
+    --input "$POSTPROCESSED_PATH" \
+    --all
+
+  "$RUN_ALL" "$FORMATTED_PATH" "$GROUND_TRUTH_JSON" "${COMMON_ARGS[@]}"
+fi
 
 printf "Done.\n"

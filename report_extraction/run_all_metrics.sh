@@ -66,7 +66,7 @@ python "$METRICS_DIR/compute_ich_location_metrics.py" \
 
 python "$METRICS_DIR/compute_ich_size_metrics.py" \
   --ground_truth "$GROUND_TRUTH_JSON" \
-  "${COMMON_ARGS[@]}" \
+  --formatted_results "$FORMATTED_RESULTS" \
   --all_modes \
   --tolerance_mm "$TOLERANCE_MM"
 
