@@ -188,11 +188,26 @@ def map_ivh_location(df: pd.DataFrame) -> pd.DataFrame:
 
         return "-".join(mapped)
 
+    def map_row(row: pd.Series) -> object:
+        structure = row["structure"]
+        lateralization = row["lateralization"]
+        if pd.isna(structure):
+            return structure
+
+        structure_parts = [part.strip() for part in str(structure).split("/")]
+        lat_parts = [part.strip() for part in str(lateralization).split("/")]
+        if len(lat_parts) < len(structure_parts):
+            lat_parts.extend([lat_parts[-1]] * (len(structure_parts) - len(lat_parts)))
+
+        mapped_parts = [
+            map_structure(struct_part, lat_parts[idx] if lat_parts else "")
+            for idx, struct_part in enumerate(structure_parts)
+        ]
+        return "/".join(mapped_parts)
+
     df = df.copy()
     mask = df["type"].astype(str).str.upper() == "IVH"
-    df.loc[mask, "structure"] = df.loc[mask].apply(
-        lambda row: map_structure(row["structure"], row["lateralization"]), axis=1
-    )
+    df.loc[mask, "structure"] = df.loc[mask].apply(map_row, axis=1)
     return df
 
 
