@@ -436,7 +436,9 @@ def send_message(report: str, base_url: str, prompt_id: int) -> str:
 
 def parse_answer(answer: str, prompt_id: int) -> List[Dict[str, str]]:
     cleaned = answer.strip()
-    if cleaned.lower().startswith("no lesions mentioned"):
+    
+    # On élargit la vérification au cas où le modèle dit "Lesion report: No lesions mentioned"
+    if "no lesions mentioned" in cleaned.lower()[:100]:
         return []
 
     schema = get_prompt_schema(prompt_id)
@@ -444,26 +446,49 @@ def parse_answer(answer: str, prompt_id: int) -> List[Dict[str, str]]:
     key_aliases = schema["key_aliases"]
 
     lesions = []
-    pattern = re.compile(r"lesion\s*\d+\s*:\s*(.*?)(?=\n\s*lesion\s*\d+\s*:|$)", re.IGNORECASE | re.DOTALL)
-    for match in pattern.finditer(cleaned):
-        payload = match.group(1).replace("\n", " ").strip()
-        fields = dict(fields_template)
+    
+    # Lecture ligne par ligne au lieu d'une Regex multiline rigide
+    for line in cleaned.split('\n'):
+        # On supprime le gras éventuel (Markdown) et les espaces
+        line = line.replace('**', '').strip()
+        
+        # Une ligne de résultat doit contenir 'type', '=' et des points-virgules ';'
+        if 'type' in line.lower() and '=' in line and ';' in line:
+            fields = dict(fields_template)
+            
+            # Découpage par point-virgule
+            items = line.split(";")
+            for item in items:
+                if "=" not in item:
+                    continue
+                
+                # Le "1" limite le split au premier '=' trouvé, sécurisant les valeurs complexes
+                key, value = item.split("=", 1)
+                
+                # Nettoyage radical de la clé (ex: "1. lesion: type" -> "type")
+                if ":" in key:
+                    key = key.split(":")[-1]  # Garde juste ce qu'il y a après les deux-points
+                    
+                key = key.strip().lower().replace("_", " ")
+                
+                # On nettoie les numéros de liste résiduels (1. , 2. , - , *)
+                key = re.sub(r"^\d+\.?\s*", "", key)
+                key = re.sub(r"^(lesion\s*\d*|\*|-)\s*", "", key).strip()
+                
+                # Alignement final de la clé avec le schéma
+                key = re.sub(r"\s+", " ", key)
+                key = key_aliases.get(key, key).replace(" ", "_")
+                value = value.strip()
+                
+                # Si la clé est valide, on l'enregistre
+                if key in fields:
+                    fields[key] = value
 
-        for item in payload.split(";"):
-            if "=" not in item:
-                continue
-            key, value = item.split("=", 1)
-            key = key.strip().lower().replace("_", " ")
-            key = re.sub(r"\s+", " ", key)
-            key = key_aliases.get(key, key).replace(" ", "_")
-            value = value.strip()
-            if key in fields:
-                fields[key] = value
-
-        lesions.append(fields)
+            # Si on a bien capturé une lésion, on l'ajoute à la liste finale
+            if fields.get("type") and fields["type"] != "U":
+                lesions.append(fields)
 
     return lesions
-
 
 def run_inference(
     data: pd.DataFrame,

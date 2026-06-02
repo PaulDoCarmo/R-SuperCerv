@@ -9,10 +9,20 @@
 #SBATCH --error=/home/pauldcrm/links/scratch/R-SuperCerv/logs/llm_%j.err
 
 # Usage:
-#   sbatch LaunchMonoGPU.sh [DATA_PATH] [SAVE_PATH] [LLM_SIZE] [BASE_GPU] [TOP_GPU_USAGE] [HF_CACHE] [HF_MODELS_DIR] [PROMPT_ID]
+#   sbatch LaunchMonoGPU.sh [DATA_PATH] [SAVE_PATH] [LLM_NAME] [BASE_GPU] [TOP_GPU_USAGE] [HF_CACHE] [HF_MODELS_DIR] [PROMPT_ID]
+#
+# LLM_NAME:
+#   llama3-8b-gptq
+#   llama3-70b-awq
+#   llama3-3-70b-awq
+#   deepseek-r1-70b-awq
+#   mistral-nemo-awq
+#   mixtral-8x7b-awq
+#   qwen2-5-32b-awq
+#   qwen2-5-72b-awq
 #
 # Example:
-#   sbatch LaunchMonoGPU.sh /path/to/reports.csv /path/to/output.csv large 0 0.9 /path/to/HFCache /path/to/HFModels 1
+#   sbatch LaunchMonoGPU.sh /path/to/reports.csv /path/to/output.csv llama3-70b-awq 0 0.9 /path/to/HFCache /path/to/HFModels 1
 
 set -euxo pipefail
 
@@ -33,7 +43,7 @@ cd "$SCRIPT_DIR"
 
 DATA_PATH="${1:-/home/pauldcrm/links/scratch/R-SuperCerv/report_extraction/reports.csv}"
 SAVE_PATH="${2:-/home/pauldcrm/links/scratch/R-SuperCerv/report_extraction/raw/results.csv}"
-LLM_SIZE="${3:-large}"
+LLM_NAME="${3:-llama3-70b-awq}"
 BASE_GPU="${4:-0}"
 TOP_GPU_USAGE="${5:-0.9}"
 HF_CACHE="${6:-$HF_CACHE_DEFAULT}"
@@ -58,24 +68,49 @@ randomize_base_port() {
 BASE_PORT=$(randomize_base_port)
 echo "Selected BASE_PORT=$BASE_PORT"
 
-case "$LLM_SIZE" in
-  small)
+case "$LLM_NAME" in
+  llama3-8b-gptq)
     MODEL_REPO="iqbalamo93/Meta-Llama-3.1-8B-Instruct-GPTQ-Q_8"
     MODEL="$HF_MODELS_DIR/Meta-Llama-3.1-8B-Instruct-GPTQ-Q_8"
     MODEL_OPTS="--max-model-len 12000 --dtype float16"
     ;;
-  large)
+  llama3-70b-awq)
     MODEL_REPO="hugging-quants/Meta-Llama-3.1-70B-Instruct-AWQ-INT4"
     MODEL="$HF_MODELS_DIR/Meta-Llama-3.1-70B-Instruct-AWQ-INT4"
     MODEL_OPTS="--dtype half --max-model-len 60000 --tensor-parallel-size 1"
     ;;
-  deepseek)
+  llama3-3-70b-awq)
+    MODEL_REPO="casperhansen/Llama-3.3-70B-Instruct-AWQ"
+    MODEL="$HF_MODELS_DIR/Llama-3.3-70B-Instruct-AWQ"
+    MODEL_OPTS="--dtype half --max-model-len 60000 --tensor-parallel-size 1"
+    ;;
+  deepseek-r1-70b-awq)
     MODEL_REPO="Valdemardi/DeepSeek-R1-Distill-Llama-70B-AWQ"
     MODEL="$HF_MODELS_DIR/DeepSeek-R1-Distill-Llama-70B-AWQ"
     MODEL_OPTS="--dtype half --max-model-len 60000 --tensor-parallel-size 1"
     ;;
+  mistral-nemo-awq)
+    MODEL_REPO="TheBloke/Mistral-Nemo-Instruct-2407-AWQ"
+    MODEL="$HF_MODELS_DIR/Mistral-Nemo-Instruct-2407-AWQ"
+    MODEL_OPTS="--dtype half --max-model-len 60000 --tensor-parallel-size 1"
+    ;;
+  mixtral-8x7b-awq)
+    MODEL_REPO="TheBloke/Mixtral-8x7B-Instruct-v0.1-AWQ"
+    MODEL="$HF_MODELS_DIR/Mixtral-8x7B-Instruct-v0.1-AWQ"
+    MODEL_OPTS="--dtype half --max-model-len 32768 --tensor-parallel-size 1"
+    ;;
+  qwen2-5-32b-awq)
+    MODEL_REPO="Qwen/Qwen2.5-32B-Instruct-AWQ"
+    MODEL="$HF_MODELS_DIR/Qwen2.5-32B-Instruct-AWQ"
+    MODEL_OPTS="--dtype half --max-model-len 32768 --tensor-parallel-size 1"
+    ;;
+  qwen2-5-72b-awq)
+    MODEL_REPO="Qwen/Qwen2.5-72B-Instruct-AWQ"
+    MODEL="$HF_MODELS_DIR/Qwen2.5-72B-Instruct-AWQ"
+    MODEL_OPTS="--dtype half --max-model-len 32768 --tensor-parallel-size 1"
+    ;;
   *)
-    echo "Unknown LLM_SIZE: '$LLM_SIZE'. Must be 'small', 'large', or 'deepseek'."
+    echo "Unknown LLM_NAME: '$LLM_NAME'. See header for valid names."
     exit 1
     ;;
 esac
@@ -97,14 +132,15 @@ export TORCH_COMPILE=0
 export VLLM_NO_USAGE_STATS=1
 export PROMETHEUS_MULTIPROC_DIR="$LOG_DIR/prometheus"
 mkdir -p "$PROMETHEUS_MULTIPROC_DIR"
-rm -f "API_GPU${BASE_GPU}_${base}.log"
+JOB_TAG="${SLURM_JOB_ID:-local}"
+rm -f "API_GPU${BASE_GPU}_${base}_${JOB_TAG}.log"
 HF_HOME="$HF_CACHE" HF_HUB_OFFLINE=1 CUDA_VISIBLE_DEVICES="$BASE_GPU" \
   vllm serve "$MODEL" \
              $MODEL_OPTS \
              --port "$BASE_PORT" \
              --gpu_memory_utilization "$TOP_GPU_USAGE" \
              --enforce-eager \
-             > "$LOG_DIR/API_GPU${BASE_GPU}_${base}.log" 2>&1 &
+             > "$LOG_DIR/API_GPU${BASE_GPU}_${base}_${JOB_TAG}.log" 2>&1 &
 
 while ! curl -s "http://localhost:${BASE_PORT}/v1/models" > /dev/null; do
   echo "Waiting for API on port $BASE_PORT..."
@@ -112,7 +148,6 @@ while ! curl -s "http://localhost:${BASE_PORT}/v1/models" > /dev/null; do
 done
 
 echo "vLLM ready. Running inference..."
-JOB_TAG="${SLURM_JOB_ID:-local}"
 rm -f "$LOG_DIR/LLM_${base}_${JOB_TAG}.log"
 python LLM_inference/Run_LLM_inference.py \
   --port "$BASE_PORT" \
