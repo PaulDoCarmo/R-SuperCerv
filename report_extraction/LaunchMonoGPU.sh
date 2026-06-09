@@ -29,8 +29,8 @@ set -euxo pipefail
 trap "echo 'Slurm requested stop. Shutting down background jobs...'; jobs -p | xargs -r kill; exit" SIGINT SIGTERM EXIT
 
 LOG_DIR="/home/pauldcrm/links/scratch/R-SuperCerv/logs"
-HF_CACHE_DEFAULT="/home/pauldcrm/links/scratch/R-SuperCerv/HFCache"
-HF_MODELS_DIR_DEFAULT="/home/pauldcrm/links/scratch/R-SuperCerv/HFModels"
+HF_CACHE_DEFAULT="/home/pauldcrm/links/scratch/R-SuperCerv/report_extraction/HFCache"
+HF_MODELS_DIR_DEFAULT="/home/pauldcrm/links/scratch/R-SuperCerv/report_extraction/HFModels"
 mkdir -p "$LOG_DIR"
 mkdir -p "$HF_CACHE_DEFAULT"
 mkdir -p "$HF_MODELS_DIR_DEFAULT"
