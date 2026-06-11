@@ -20,27 +20,60 @@ export HOME="/home/pauldcrm/links/scratch/R-SuperCerv/organ_masks"
 # totalseg_set_license -l "$TOTALSEG_LICENSE"
 
 WEIGHTS_DIR="/home/pauldcrm/links/scratch/R-SuperCerv/organ_masks"
-mkdir -p "$WEIGHTS_DIR"
+DOSSIER_ENTREE="/home/pauldcrm/links/scratch/data_laurent/test_cases 2026_04_22/"
+DOSSIER_SORTIE="/home/pauldcrm/links/scratch/R-SuperCerv/organ_masks/segmentations_organes"
+FICHIER_SCAN="ID_ca7bbeab_instUid_ID_a3bc73b11.nii.gz"
+DOSSIER_SCAN="/home/pauldcrm/links/scratch/data_laurent/test_cases 2026_04_22/"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --weights-dir)   WEIGHTS_DIR="$2";    shift 2 ;;
+        --entree)        DOSSIER_ENTREE="$2"; shift 2 ;;
+        --sortie)        DOSSIER_SORTIE="$2"; shift 2 ;;
+        --scan)          FICHIER_SCAN="$2";   shift 2 ;;
+        --dossier-scan)  DOSSIER_SCAN="$2";   shift 2 ;;
+        *) echo "Argument inconnu: $1"; exit 1 ;;
+    esac
+done
+
+mkdir -p "$WEIGHTS_DIR" "$DOSSIER_SORTIE"
 export TOTALSEG_WEIGHTS_DIR="$WEIGHTS_DIR"
 
-# 5. Exécution de TotalSegmentator
-# Variables pour simplifier la lecture (à adapter selon vos dossiers)
-DOSSIER_ENTREE="/home/pauldcrm/links/scratch/data_laurent/test_cases 2026_04_22/"
-DOSSIER_SORTIE="/home/pauldcrm/links/scratch/R-SuperCerv/organ_masks/segmentations"
-FICHIER_SCAN="ID_ca7bbeab_instUid_ID_a3bc73b11.nii.gz"
+run_totalsegmentator() {
+    local fichier_entree="$1"
+    local nom_scan
+    nom_scan=$(basename "$fichier_entree")
 
-echo "Début de la segmentation pour $FICHIER_SCAN à $(date)"
+    echo "Début de la segmentation pour $nom_scan à $(date)"
 
-# Lancement de la tâche cerveau avec fusion des labels (--ml) et aperçu 3D (--preview)
-TotalSegmentator -i "$DOSSIER_ENTREE/$FICHIER_SCAN" \
-                 -o "$DOSSIER_SORTIE/cerveau_$FICHIER_SCAN" \
-                 -ta brain_structures \
-                 --preview
+    # Lancement de la tâche cerveau avec fusion des labels (--ml) et aperçu 3D (--preview)
+    TotalSegmentator -i "$fichier_entree" \
+                     -o "$DOSSIER_SORTIE/segmented_organs_$nom_scan" \
+                     -ta brain_structures \
+                     --preview
 
-# Lancement de la tâche saignements
-# TotalSegmentator -i "$DOSSIER_ENTREE/$FICHIER_SCAN" \
-#                  -o "$DOSSIER_SORTIE/saignements_$FICHIER_SCAN" \
-#                  -ta cerebral_bleed \
-#                  --ml
+    # Lancement de la tâche saignements
+    # TotalSegmentator -i "$fichier_entree" \
+    #                  -o "$DOSSIER_SORTIE/saignements_$nom_scan" \
+    #                  -ta cerebral_bleed \
+    #                  --ml
 
-echo "Fin de la segmentation à $(date)"
+    echo "Fin de la segmentation pour $nom_scan à $(date)"
+}
+
+if [[ -n "$DOSSIER_SCAN" ]]; then
+    # Mode dossier : traiter tous les .nii.gz dans DOSSIER_SCAN
+    shopt -s nullglob
+    scans=("$DOSSIER_SCAN"/*.nii.gz)
+    if [[ ${#scans[@]} -eq 0 ]]; then
+        echo "Aucun fichier .nii.gz trouvé dans $DOSSIER_SCAN"
+        exit 1
+    fi
+    echo "${#scans[@]} fichier(s) trouvé(s) dans $DOSSIER_SCAN"
+    for scan in "${scans[@]}"; do
+        run_totalsegmentator "$scan"
+    done
+else
+    # Mode fichier : traiter un seul scan
+    run_totalsegmentator "$DOSSIER_ENTREE/$FICHIER_SCAN"
+fi
