@@ -22,7 +22,6 @@ import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data.distributed import DistributedSampler
 from training.dataset.dim3.sampler import ChunkedSampler
-from training.dataset.dim3.sampler_clip import one_organ_per_batch_sampler
 
 import gc
 
@@ -75,25 +74,7 @@ def train_net(net, trainset, testset, args, ema_net=None, fold_idx=0):
         assert trainset.gigantic_length==False, 'You must set gigantic_length to False in the dataset if you want to use the dataloader with a sampler'
         leng = trainset.__len__()
     
-    if args.clip_pretrain:
-        train_sampler = one_organ_per_batch_sampler(
-            dataset_size=leng,#real size of the dataset
-            samples_per_epoch=args.iter_per_epoch*args.batch_size*args.ngpus_per_node,
-            shuffle=True,
-            seed=42,
-            rank=dist.get_rank() if args.distributed else 0,
-            world_size=dist.get_world_size() if args.distributed else 1,
-            dataset = trainset,
-            batch_size=args.batch_size_global)
-           
-        trainLoader = data.DataLoader(
-            trainset, 
-            batch_sampler=train_sampler,
-            pin_memory=(args.aug_device != 'gpu'),
-            num_workers=args.num_workers,
-            persistent_workers=(args.num_workers>0),
-        )
-    elif args.model_genesis_pretrain:
+    if args.model_genesis_pretrain:
         train_sampler = DistributedSampler(trainset) if args.distributed else None
         trainLoader = data.DataLoader(
             trainset, 
@@ -393,7 +374,7 @@ def train_epoch(trainLoader, net, ema_net, optimizer, epoch, writer, scaler, arg
 
 def get_parser():
     parser = argparse.ArgumentParser(description='CBIM Meidcal Image Segmentation')
-    parser.add_argument('--dataset', type=str, default='abdomenatlas_ufo', help='dataset name')
+    parser.add_argument('--dataset', type=str, default='ich', help='dataset name (ich = stage 1, ich_ufo = stage 2)')
     parser.add_argument('--reports', default=None, help='path to reports')
     parser.add_argument('--model', type=str, default='unet', help='model name')
     parser.add_argument('--dimension', type=str, default='2d', help='2d model or 3d model')
@@ -473,6 +454,7 @@ def get_parser():
                         )
     
     parser.add_argument('--crop_size', default=None, type=int, help='If not None, uses a subset of the training set of the specified size')
+    parser.add_argument('--iter_per_epoch_override', type=int, default=None, help='Override iter_per_epoch from config (smoke tests / short runs).')
 
 
 
@@ -530,7 +512,11 @@ def get_parser():
     if reports is not None:
         args.reports = reports
         print(f'Overwriting reports to {reports}')
-        
+
+    if args.iter_per_epoch_override is not None:
+        args.iter_per_epoch = args.iter_per_epoch_override
+        print(f'Overwriting iter_per_epoch to {args.iter_per_epoch}')
+
     if args.model_genesis_pretrain:
         #disable deep supervision
         args.aux_loss = False

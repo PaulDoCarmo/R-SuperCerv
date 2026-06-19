@@ -4,7 +4,6 @@ import yaml
 from torch.utils.data import DataLoader
 import tqdm
 
-#python dataset_abdomenatlas.py --dataset abdomenatlas --model medformer --dimension 3d --batch_size 2 --crop_on_tumor --save_destination /fastwork/psalvador/JHU/data/atlas_300_medformer_augmented_npy_augmented_multich_crop_on_tumor/ --crop_on_tumor --multi_ch_tumor --workers_overwrite 10
 
 
 def main():
@@ -53,7 +52,8 @@ def main():
     args.load_clip=False
     args.clip_loss=False
     
-    config_path = 'config/%s/%s_%s.yaml'%('abdomenatlas', args.model, args.dimension)
+    # config selon le dataset (ex: --dataset ich -> config/ich/medformer_3d.yaml)
+    config_path = 'config/%s/%s_%s.yaml'%(args.dataset, args.model, args.dimension)
     if not os.path.exists(config_path):
         raise ValueError("The specified configuration doesn't exist: %s"%config_path)
 
@@ -84,11 +84,11 @@ def main():
         args.training_size = [args.crop_size, args.crop_size, args.crop_size]
 
     # Create the training dataset
-    if args.dataset == 'atlas300' or args.dataset == 'atlas':
-        import training.dataset.dim3.dataset_abdomenatlas as abdomenatlas
-    elif args.dataset == 'atlas300_UFO' or args.dataset == 'atlas_ufo':
-        import training.dataset.dim3.dataset_abdomenatlas_UFO as abdomenatlas
-        print('Running UFO+atlas')
+    if args.dataset == 'ich':
+        from training.dataset.dim3.dataset_ich import ICHDataset as DatasetClass
+    elif args.dataset == 'ich_ufo':
+        from training.dataset.dim3.dataset_ich_reports import ICHReportsDataset as DatasetClass
+        print('Running reports dataset (stage 2)')
     else:
         raise ValueError("The specified dataset doesn't exist: %s"%args.dataset)
 
@@ -103,7 +103,7 @@ def main():
 
     if args.Atlas_only or args.UFO_only:
         if tumor_classes is not None:
-            train_dataset = abdomenatlas.AbdomenAtlasDataset(
+            train_dataset = DatasetClass(
                 args=args,
                 mode='train',
                 crop_on_tumor=args.crop_on_tumor,
@@ -117,7 +117,7 @@ def main():
                 tumor_classes=tumor_classes
             )
         else:
-            train_dataset = abdomenatlas.AbdomenAtlasDataset(
+            train_dataset = DatasetClass(
                     args=args,
                     mode='train',
                     crop_on_tumor=args.crop_on_tumor,
@@ -131,7 +131,7 @@ def main():
                 )
     else:
         if tumor_classes is not None:
-            train_dataset = abdomenatlas.AbdomenAtlasDataset(
+            train_dataset = DatasetClass(
                 args=args,
                 mode='train',
                 crop_on_tumor=args.crop_on_tumor,
@@ -143,7 +143,7 @@ def main():
                 tumor_classes=tumor_classes
             )
         else:
-            train_dataset = abdomenatlas.AbdomenAtlasDataset(
+            train_dataset = DatasetClass(
                     args=args,
                     mode='train',
                     crop_on_tumor=args.crop_on_tumor,

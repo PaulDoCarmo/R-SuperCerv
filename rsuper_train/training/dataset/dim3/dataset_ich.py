@@ -15,7 +15,6 @@ import sys
 import  importlib
 from pathlib import Path
 
-#python dataset_abdomenatlas.py --dataset abdomenatlas --model medformer --dimension 3d --batch_size 2 --crop_on_tumor --save_destination /fastwork/psalvador/JHU/data/atlas_300_medformer_augmented_npy_augmented_multich_crop_on_tumor/ --crop_on_tumor --multi_ch_tumor --workers_overwrite 10
 
 DEBUG_OUTPUT_ROOT = os.environ.get("RSUPER_DEBUG_ROOT", "/home/pauldcrm/links/scratch")
 
@@ -158,7 +157,7 @@ def get_sample_weight(labels,proportions,class_names,balancer=None,loading_augme
     return weights
 
 
-class AbdomenAtlasDataset(Dataset):
+class ICHDataset(Dataset):
     def __init__(self, args, mode='train', k_fold=10, k=0, seed=0, all_train=False,
                 crop_on_tumor=False,
                  save_destination=None,  

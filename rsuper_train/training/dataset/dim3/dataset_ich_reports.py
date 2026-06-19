@@ -20,7 +20,6 @@ import json
 import  importlib
 from pathlib import Path
 
-#python dataset_abdomenatlas.py --dataset abdomenatlas --model medformer --dimension 3d --batch_size 2 --crop_on_tumor --save_destination /fastwork/psalvador/JHU/data/atlas_300_medformer_augmented_npy_augmented_multich_crop_on_tumor/ --crop_on_tumor --multi_ch_tumor --workers_overwrite 10
 
 DEBUG_OUTPUT_ROOT = os.environ.get("RSUPER_DEBUG_ROOT", "/home/pauldcrm/links/scratch")
 
@@ -123,7 +122,7 @@ def clean_ufo(reports,annotated_tumors,limit_healthy=True):
     reports = reports[reports['BDMAP_ID'].isin(ids_of_interest)]
     return reports, ids_of_interest,tumors_per_type
 
-class AbdomenAtlasDataset(Dataset):
+class ICHReportsDataset(Dataset):
     def __init__(self, args, mode='train', seed=0, all_train=False,
                 crop_on_tumor=True,
                  save_destination=None,  
@@ -134,7 +133,7 @@ class AbdomenAtlasDataset(Dataset):
                  balance_supervision=True,
                  UFO_only=False,
                  Atlas_only=False):    
-        super(AbdomenAtlasDataset, self).__init__()
+        super(ICHReportsDataset, self).__init__()
         print('Tumor classes:', tumor_classes, flush=True, file=sys.stderr)
         
         self.mode = mode
