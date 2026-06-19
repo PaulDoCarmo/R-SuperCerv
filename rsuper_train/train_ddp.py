@@ -739,7 +739,7 @@ if __name__ == '__main__':
     with open(f"{args.cp_path}/{args.dataset}/{args.unique_name}/cross_validation.txt",  'w') as f:
         np.set_printoptions(precision=4, suppress=True) 
         f.write('Dice\n')
-        for i in range(args.k_fold):
+        for i in range(len(Dice_list)):
             f.write(f"Fold {i}: {Dice_list[i]}\n")
         f.write(f"Each Class Dice Avg: {np.mean(total_Dice, axis=0)}\n")
         f.write(f"Each Class Dice Std: {np.std(total_Dice, axis=0)}\n")
@@ -749,7 +749,7 @@ if __name__ == '__main__':
         f.write("\n")
 
         f.write("HD\n")
-        for i in range(args.k_fold):
+        for i in range(len(Dice_list)):
             f.write(f"Fold {i}: {HD_list[i]}\n")
         f.write(f"Each Class HD Avg: {np.mean(total_HD, axis=0)}\n")
         f.write(f"Each Class HD Std: {np.std(total_HD, axis=0)}\n")
@@ -759,7 +759,7 @@ if __name__ == '__main__':
         f.write("\n")
 
         f.write("ASD\n")
-        for i in range(args.k_fold):
+        for i in range(len(Dice_list)):
             f.write(f"Fold {i}: {ASD_list[i]}\n")
         f.write(f"Each Class ASD Avg: {np.mean(total_ASD, axis=0)}\n")
         f.write(f"Each Class ASD Std: {np.std(total_ASD, axis=0)}\n")

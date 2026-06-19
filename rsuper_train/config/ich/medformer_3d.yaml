@@ -64,7 +64,7 @@ iter_per_epoch: 1000
 #VALIDATION
 ema: True
 ema_alpha: 0.99
-val_freq: 20000
+val_freq: 5          # valider tous les 5 epochs (suivi du Dice de validation)
 
 
 #INFERENCE

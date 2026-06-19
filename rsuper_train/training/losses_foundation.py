@@ -20,8 +20,11 @@ from functools import reduce
 import copy
 
 
-DEBUG_OUTPUT_ROOT = os.environ.get("RSUPER_DEBUG_ROOT", "/home/pauldcrm/links/scratch")
+DEBUG_OUTPUT_ROOT = os.environ.get("RSUPER_DEBUG_ROOT", "/home/pauldcrm/links/scratch/R-SuperCerv/debug")
 LOSS_CHECKING_DIR = os.path.join(DEBUG_OUTPUT_ROOT, "LossChecking")
+# Dumps de "sanity" (images/labels/loss en .nii.gz) DESACTIVES par defaut.
+# Mettre RSUPER_SANITY=1 pour les reactiver (ils iront dans DEBUG_OUTPUT_ROOT).
+SANITY_CHECKS = os.environ.get("RSUPER_SANITY", "0") == "1"
 
 def dilate_volume(volume, kernel_size, full_pass_radius=3):
     # ensure odd
@@ -179,7 +182,7 @@ def get_known_voxels(y: torch.Tensor, unk_voxels: torch.Tensor, dilation=5,sanit
     #print('Sum of unknown voxels:',unk_voxels.sum())
     #print('Sum of all voxels:',one.sum(),'matches?',torch.equal(known_voxels + unk_voxels,one))
 
-    if sanity:
+    if sanity and SANITY_CHECKS:
         global counter
         if counter<10:
             debug_save_labels(y,str(counter)+'_y',label_names=classes) 
@@ -949,7 +952,7 @@ def calculate_loss(model_output, label, unk_voxels, args, matcher,chosen_segment
             loss_seg = F.binary_cross_entropy_with_logits(r, l.float(), reduction='none', weight=class_weights)
             
             assert loss_seg.shape == known_voxels.shape, f'Loss shape {loss_seg.shape} does not match known voxels shape {known_voxels.shape}'
-            if counter2<5 and j==0:
+            if SANITY_CHECKS and counter2<5 and j==0:
                 label_names = classes
                 debug_save_labels(torch.sigmoid(r),str(counter2),out_dir=os.path.join(DEBUG_OUTPUT_ROOT, 'SanityOutputs'),label_names=label_names)
                 debug_save_labels(l.float(),str(counter2),out_dir=os.path.join(DEBUG_OUTPUT_ROOT, 'SanityLabelsBeforeLoss'),label_names=label_names)
