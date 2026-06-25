@@ -126,7 +126,7 @@ def validation_ddp(net, dataloader, args, matcher=None):
 
             #_, label_pred = torch.max(pred, dim=1)
             #use threshold, not max for multi-label cases
-            label_pred = (label_pred > 0.5)
+            label_pred = (pred > 0.5)   # FIX: etait 'label_pred' (non defini) ; 'pred' = sortie sigmoid de l'inference
             label_pred=label_pred.cpu()
             labels=labels.cpu().bool()
             #hungarian marching if multi-channel tumor

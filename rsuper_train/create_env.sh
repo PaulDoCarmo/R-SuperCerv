@@ -33,6 +33,10 @@ pip install --no-index SimpleITK nibabel PyYAML tqdm scikit-image scikit-learn
 # 4) Entrainement R-Super (etape D et au-dela)
 pip install --no-index torch einops timm monai batchgenerators tensorboard cvxpy mmcv
 
+# 5) setuptools < 81 (depuis PyPI) : le wheelhouse fournit setuptools 82 qui a retire
+#    pkg_resources, dont depend TensorBoard. On rabaisse pour reparer 'tensorboard'.
+pip install "setuptools<81"
+
 echo "==> Environnement pret : $ENV_DIR"
 python - <<'PY'
 import SimpleITK, nibabel, yaml, skimage, numpy
