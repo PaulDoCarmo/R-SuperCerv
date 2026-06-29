@@ -27,7 +27,7 @@ import gc
 
 
 from training.utils import update_ema_variables
-from training.validation import validation_ddp as validation
+from training.validation import validation_binary as validation
 from training.utils import (
     exp_lr_scheduler_with_warmup, 
     log_evaluation_result, 
@@ -186,9 +186,9 @@ def train_net(net, trainset, testset, args, ema_net=None, fold_idx=0):
 
             dice_list_test, ASD_list_test, HD_list_test = validation(net_for_eval, testLoader, args, matcher=matcher)
             if is_master(args):
-                dice_list_test, ASD_list_test, HD_list_test = filter_validation_results(dice_list_test, ASD_list_test, HD_list_test, args) # filter results for some dataset, e.g. amos_mr
-                log_evaluation_result(writer, dice_list_test, ASD_list_test, HD_list_test, 'test', epoch, args)
-            
+                # validation_binary renvoie un Dice val (multi-label) -> log direct, pas de filtre CBIM
+                writer.add_scalar('Val/Dice', float(dice_list_test.mean()), epoch+1)
+
                 if dice_list_test.mean() >= best_Dice.mean():
                     best_Dice = dice_list_test
                     best_HD = HD_list_test
@@ -455,6 +455,8 @@ def get_parser():
     
     parser.add_argument('--crop_size', default=None, type=int, help='If not None, uses a subset of the training set of the specified size')
     parser.add_argument('--iter_per_epoch_override', type=int, default=None, help='Override iter_per_epoch from config (smoke tests / short runs).')
+    parser.add_argument('--rotate_override', type=int, default=None, help='Override l angle de rotation (augmentation) : applique [v,v,v].')
+    parser.add_argument('--training_size_override', type=int, nargs=3, default=None, help='Override la taille de patch D H W (et window_size).')
 
 
 
@@ -529,7 +531,15 @@ def get_parser():
         args.load_clip = True
         
     if args.crop_size is not None:
-        args.training_size = [args.crop_size, args.crop_size, args.crop_size] 
+        args.training_size = [args.crop_size, args.crop_size, args.crop_size]
+
+    if args.rotate_override is not None:
+        args.rotate = [args.rotate_override, args.rotate_override, args.rotate_override]
+        print(f'Overwriting rotate to {args.rotate}')
+    if args.training_size_override is not None:
+        args.training_size = list(args.training_size_override)
+        args.window_size = list(args.training_size_override)
+        print(f'Overwriting training_size/window_size to {args.training_size}')
         
     args.batch_size_global = args.batch_size
         

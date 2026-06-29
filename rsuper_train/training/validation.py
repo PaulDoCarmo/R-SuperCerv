@@ -99,6 +99,44 @@ def validation(net, dataloader, args, matcher=None):
 
 
 
+def validation_binary(net, dataloader, args, matcher=None, threshold=0.5):
+    """
+    Validation propre pour segmentation MULTI-LABEL binaire (R-SuperCerv / ICH).
+
+    `validation_ddp` (CBIM) suppose du multi-classe argmax avec une classe
+    background a l'index 0 -> cassee pour notre format (1 canal lesion sigmoid).
+    Ici on calcule directement le Dice binaire par canal 'lesion'
+    (sigmoid > seuil), moyenne sur les canaux puis sur les cas.
+
+    Retourne (dice, asd, hd) en np.array a 1 element, pour rester compatible
+    avec la logique de best-model de train_ddp (best_Dice.mean()).
+    """
+    net.eval()
+    classes = list(dataloader.dataset.classes)
+    lesion_idx = [i for i, c in enumerate(classes) if 'lesion' in c.lower()]
+    if not lesion_idx:
+        lesion_idx = list(range(len(classes)))
+    inference = get_inference(args)
+    dices = []
+    with torch.no_grad():
+        iterator = tqdm(dataloader) if is_master(args) else dataloader
+        for images, labels, spacing in iterator:
+            img = images.cuda(args.proc_idx).float()
+            prob = inference(net, img, args)           # (B, C, D, H, W) proba sigmoid (cpu)
+            pred = (prob > threshold)
+            lab = labels.cpu().bool()
+            for b in range(pred.shape[0]):
+                ch = []
+                for c in lesion_idx:
+                    p, g = pred[b, c], lab[b, c]
+                    s = int(p.sum()) + int(g.sum())
+                    ch.append(1.0 if s == 0 else 2.0 * int((p & g).sum()) / s)
+                dices.append(float(np.mean(ch)))
+    mean_dice = float(np.mean(dices)) if dices else 0.0
+    logging.info(f"[validation_binary] n={len(dices)} cas | Dice val moyen = {mean_dice:.4f}")
+    return np.array([mean_dice]), np.array([0.0]), np.array([0.0])
+
+
 def validation_ddp(net, dataloader, args, matcher=None):
     
     net.eval()
