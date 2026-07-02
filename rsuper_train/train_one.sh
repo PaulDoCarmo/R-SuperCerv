@@ -5,6 +5,7 @@
 #
 #SBATCH --account=rrg-josedolz
 #SBATCH --time=06:00:00
+#SBATCH --requeue
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=8
