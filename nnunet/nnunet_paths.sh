@@ -7,5 +7,9 @@ export nnUNet_preprocessed=/home/pauldcrm/links/scratch/R-SuperCerv/nnUNet_prepr
 export nnUNet_results=/home/pauldcrm/links/scratch/R-SuperCerv/nnUNet_results
 mkdir -p "$nnUNet_preprocessed" "$nnUNet_results"
 
+# Desactive torch.compile (pas de Triton dans l'env CC -> sinon RuntimeError).
+# nnU-Net tourne alors en mode eager (un peu plus lent, mais fonctionne).
+export nnUNet_compile=f
+
 export DATASET_ID=1
 export DATASET_NAME=ICH
