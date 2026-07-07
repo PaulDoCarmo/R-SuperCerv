@@ -1,0 +1,110 @@
+# =====================================================================================
+# R-SuperCerv STAGE 2 : supervision par RAPPORTS (Volume Loss + Ball Loss).
+# Charge par train_ddp.py quand --dataset ich_ufo (chemin = config/ich_ufo/medformer_3d.yaml).
+#
+# Deux datasets combines a chaque batch (balance_supervision) :
+#   - data_root  = dataset-MASQUES (Atlas) : CT + 13 canaux per-voxel (12 structures + ich_lesion)
+#   - UFO_root   = dataset-RAPPORTS        : CT + 12 structures per-voxel, SANS lesion
+#   - reports    = metadonnees per-tumeur  (report_to_rsuper_metadata.py -> ich_per_tumor_metadata.csv)
+#
+# PREREQUIS (a produire quand les donnees CT-rapports arrivent) :
+#   1) TotalSegmentator -ta brain_structures sur les 359 cas-masques ET sur les cas-rapports.
+#   2) data_root = re-construire l'Atlas ICH avec les 13 classes (label_names_ich_full.yaml) :
+#        build_ich_dataset.py (+ structures) -> resample_ich_3d.py -> nii_to_npz_ich.py
+#      puis RE-ENTRAINER le stage 1 avec ces 13 classes (le checkpoint --pretrained doit
+#      avoir la meme tete que le stage 2).
+#   3) UFO_root = build_ich_reports_dataset.py (label_names_ich_organs.yaml, 12 structures)
+#        -> resample_ich_3d.py -> nii_to_npz_ich.py
+#   4) reports  = report_to_rsuper_metadata.py --input <..._formated.csv>
+#
+# LANCEMENT (recette 2-stages, cf. R-Super) :
+#   python train_ddp.py --dataset ich_ufo --model medformer --dimension 3d \
+#     --pretrained <stage1_13classes.pth> \
+#     --report_volume_loss_basic 0.1 --loss ball_dice_last \
+#     --unique_name ich_stage2 ...
+#   (tumor_classes n'est pas passe -> defaut ['brain'] dans ICHReportsDataset)
+# =====================================================================================
+
+#DATA  -- STAGE 2 : >>> CHEMINS A RENSEIGNER QUAND LES DONNEES ARRIVENT <<<
+data_root: /home/pauldcrm/links/scratch/R-SuperCerv/dataset_ich_full_npz/   # Atlas 13 classes
+UFO_root:  /home/pauldcrm/links/scratch/R-SuperCerv/dataset_ich_reports_npz/ # rapports, 12 structures
+reports:   /home/pauldcrm/links/scratch/R-SuperCerv/report_extraction/metadata/ich_per_tumor_metadata.csv
+classes: 13         # 12 structures + ich_lesion (doit == label_names_ich_full.yaml, trie)
+modality: CT
+
+
+#MODEL  (identique au stage 1 -- le checkpoint --pretrained doit matcher cette archi)
+arch: medformer
+in_chan: 1
+base_chan: 32
+conv_block: 'BasicBlock'
+
+down_scale: [[2,2,2], [2,2,2], [2,2,2], [2,2,2]]
+kernel_size: [[3,3,3], [3,3,3], [3,3,3], [3,3,3], [3,3,3]]
+chan_num: [64, 128, 256, 320, 256, 128, 64, 32]
+norm: in
+act: relu
+map_size: [3,3,3]
+conv_num: [2,0,0,0, 0,0,2,2]
+trans_num: [0,2,4,6, 4,2,0,0]
+num_heads: [1,4,8,10, 8,4,1,1]
+expansion: 4
+fusion_depth: 2
+fusion_dim: 320
+fusion_heads: 10
+attn_drop: 0
+proj_drop: 0
+proj_type: 'depthwise'
+
+
+#TRAIN
+epochs: 150
+training_size: [128, 128, 128] # taille du patch d'entrainement
+start_epoch: 0
+num_workers: 8
+aug_device: 'cpu'
+
+aux_loss: True
+aux_weight: [0.5, 0.5]
+
+split_seed: 0
+k_fold: 10
+
+optimizer: adamw
+base_lr: 0.0006
+betas: [0.9, 0.999]
+weight_decay: 0.05
+weight: [0.5, 1, 1, 1, 1, 1, 1, 1, 1, 1]   # vestigial (non utilise : criterion pondere desactive)
+rlt: 1 # relation entre CE et Dice loss
+
+
+scale: [0, 0, 0]
+rotate: [30, 30, 30]
+translate: [0, 0, 0]
+affine_pad_size: [40, 40, 40]
+gaussian_noise_std: 0.02
+
+print_freq: 5
+iter_per_epoch: 1000
+
+
+#VALIDATION
+ema: True
+ema_alpha: 0.99
+val_freq: 5
+
+
+#INFERENCE
+sliding_window: True
+window_size: [128, 128, 128]
+
+
+# DDP
+world_size: 1
+proc_idx: 0
+rank: 0
+port: 10000
+dist_url: 'tcp://localhost:10000'
+dist_backend: "nccl"
+multiprocessing_distributed: true
+reproduce_seed: null

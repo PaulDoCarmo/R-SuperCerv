@@ -1,0 +1,40 @@
+# requirements-rsuper.txt
+# Versions EXACTES de l'environnement Alliance/Compute Canada qui fonctionne (Python 3.10.13).
+# Sur la NOUVELLE machine (GPU interne, avec internet) : env Python 3.10, puis
+#     pip install -r requirements-rsuper.txt
+# ATTENTION torch : la version ci-dessous a ete compilee pour CUDA 12.2 sur Alliance.
+# Sur la nouvelle machine, installe le torch qui matche TON CUDA, p.ex. :
+#     pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cu121
+# (verifie `nvidia-smi` pour la version CUDA du driver).
+
+# --- coeur scientifique ---
+numpy==1.26.4
+scipy==1.15.1
+pandas==2.2.3
+matplotlib==3.10.0
+seaborn==0.13.2
+
+# --- imagerie medicale / resampling (dataset_conversion) ---
+SimpleITK==2.3.1
+nibabel==5.3.2
+PyYAML==6.0.2
+tqdm==4.68.2
+scikit-image==0.24.0
+scikit-learn==1.5.2
+
+# --- entrainement R-Super (MedFormer + Volume/Ball loss) ---
+torch==2.6.0
+einops==0.8.2
+timm==1.0.24
+monai==1.5.2
+batchgenerators==0.25.1
+tensorboard==2.20.0
+cvxpy==1.4.2
+
+# mmcv : OPTIONNEL. R-SuperCerv rend l'import mmcv/vtunet optionnel (model/dim3/__init__.py) ;
+# MedFormer n'en a pas besoin. Ne l'installe que si un import echoue explicitement dessus.
+# mmcv==2.1.0
+
+# --- fix indispensable ---
+# setuptools 81+ retire pkg_resources dont depend tensorboard -> rabaisser :
+setuptools<81

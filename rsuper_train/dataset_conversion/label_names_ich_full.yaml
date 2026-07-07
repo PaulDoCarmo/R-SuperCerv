@@ -1,0 +1,22 @@
+# Classes du MODELE = dataset-MASQUES (data_root) pour le stage 2 ICH.
+# structures cerebrales + ich_lesion (le modele predit TOUS ces canaux).
+# Raison d'inclure les structures comme classes (pas seulement l'ICH) :
+#   - R-Super construit chosen_segment_mask a partir des canaux structures DU LABEL
+#     (get_chosen_segment_mask lit tensor_lab = les classes du modele) -> si les
+#     structures sont des classes, l'adaptation du Dataset est minimale.
+#   - bonus : multi-tache (contexte anatomique) + gating a l'inference.
+# => stage 1 doit etre re-entraine avec CETTE liste (coherence pour charger le
+#    pretrained au stage 2). dataset-RAPPORTS (UFO) = ces memes structures SANS ich_lesion.
+- brainstem
+- caudate_nucleus
+- cerebellum
+- frontal_lobe
+- ich_lesion
+- insular_cortex
+- internal_capsule
+- lentiform_nucleus
+- occipital_lobe
+- parietal_lobe
+- temporal_lobe
+- thalamus
+- ventricle
