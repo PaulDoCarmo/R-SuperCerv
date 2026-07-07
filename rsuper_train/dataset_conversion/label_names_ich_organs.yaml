@@ -1,0 +1,18 @@
+# Classes du DATASET-RAPPORTS (UFO) pour l'ICH : structures cerebrales SEULEMENT.
+# (R-Super exige que le dataset-rapports N'AIT PAS de canal lesion : les cas-rapports
+#  n'ont pas de masque per-voxel ; la lesion est deduite du rapport via les losses.)
+# Ces masques (TotalSegmentator -ta brain_structures) servent a construire le
+# chosen_segment_mask (la region ou le rapport situe l'ICH).
+# Sous-ensemble = les regions vers lesquelles report_to_rsuper_metadata.py mappe.
+- brainstem
+- caudate_nucleus
+- cerebellum
+- frontal_lobe
+- insular_cortex
+- internal_capsule
+- lentiform_nucleus
+- occipital_lobe
+- parietal_lobe
+- temporal_lobe
+- thalamus
+- ventricle

@@ -38,6 +38,13 @@ import numpy as np
 import nibabel as nib
 
 
+# Les 12 structures cerebrales (TotalSegmentator -ta brain_structures) ajoutees comme
+# canaux au STAGE 2 (mode --with_structures). Doit == label_names_ich_organs.yaml.
+STRUCTURES = ["brainstem", "caudate_nucleus", "cerebellum", "frontal_lobe",
+              "insular_cortex", "internal_capsule", "lentiform_nucleus",
+              "occipital_lobe", "parietal_lobe", "temporal_lobe", "thalamus", "ventricle"]
+
+
 # --------------------------------------------------------------------------- #
 # Arguments
 # --------------------------------------------------------------------------- #
@@ -58,6 +65,12 @@ def parse_args():
                         "detecter les cas 'rapports' a exclure (dossiers segmented_organs_<ID>.nii.gz).")
     p.add_argument("--ich_label", type=int, default=1,
                    help="Valeur encodant l'ICH dans les masques d'origine.")
+    p.add_argument("--with_structures", action="store_true",
+                   help="STAGE 2 : ajouter aussi les 12 structures (symlink depuis "
+                        "--organ_masks_dir) dans segmentations/ -> dataset ATLAS 13 classes. "
+                        "Ecrit alors label_names_ich_full.yaml (13) au lieu de 1 classe.")
+    p.add_argument("--totalseg_prefix", default="segmented_organs_",
+                   help="Prefixe des dossiers TotalSegmentator (segmented_organs_<ID>.nii.gz/).")
     p.add_argument("--keep_report_cases", action="store_true",
                    help="Ne PAS exclure les cas qui ont des masques d'organes (cas 'rapports').")
     p.add_argument("--exclude_ids", default=None,
@@ -124,8 +137,28 @@ def load_exclude_csv(path):
 # --------------------------------------------------------------------------- #
 # Traitement d'un cas (execute dans un process worker)
 # --------------------------------------------------------------------------- #
+def link_structures(cid, seg_dir, organ_masks_dir, prefix):
+    """Symlink les 12 structures TotalSeg du cas dans seg_dir/. Retourne le nb manquantes."""
+    cand = [os.path.join(organ_masks_dir, prefix + cid + ".nii.gz"),
+            os.path.join(organ_masks_dir, prefix + cid)]
+    ts_dir = next((c for c in cand if os.path.isdir(c)), None)
+    if ts_dir is None:
+        return len(STRUCTURES)  # tout manquant : dossier TotalSeg absent
+    missing = 0
+    for s in STRUCTURES:
+        src = os.path.join(ts_dir, s + ".nii.gz")
+        if not os.path.exists(src):
+            missing += 1
+            continue
+        dst = os.path.join(seg_dir, s + ".nii.gz")
+        if not os.path.exists(dst):
+            os.symlink(os.path.realpath(src), dst)
+    return missing
+
+
 def process_case(task):
-    cid, ct_src, mask_src, out_dir, ich_label, copy_ct, overwrite, dry_run = task
+    (cid, ct_src, mask_src, out_dir, ich_label, copy_ct, overwrite, dry_run,
+     with_structures, organ_masks_dir, totalseg_prefix) = task
     res = {"id": cid, "status": "ok", "detail": "",
            "ich_voxels": 0, "ich_volume_mm3": 0.0, "shape": "", "spacing": ""}
     try:
@@ -147,6 +180,11 @@ def process_case(task):
             res["ich_volume_mm3"] = float(n * zd[0] * zd[1] * zd[2])
             res["shape"] = "x".join(str(s) for s in arr.shape[:3])
             res["spacing"] = "x".join(f"{z:.3f}" for z in zd)
+            # meme si la lesion existe deja, on (re)lie les structures manquantes
+            if with_structures and not dry_run:
+                miss = link_structures(cid, seg_dir, organ_masks_dir, totalseg_prefix)
+                if miss:
+                    res["detail"] = (res["detail"] + f"|struct_missing={miss}").strip("|")
             return res
 
         # Header CT (lazy : pas de chargement des voxels).
@@ -202,6 +240,12 @@ def process_case(task):
         hdr.set_data_dtype(np.uint8)
         nib.save(nib.Nifti1Image(ich, mask_img.affine, hdr), ich_dst)
 
+        # STAGE 2 : ajouter les 12 structures (symlink) -> dataset ATLAS 13 classes.
+        if with_structures:
+            miss = link_structures(cid, seg_dir, organ_masks_dir, totalseg_prefix)
+            if miss:
+                res["detail"] = (res["detail"] + f"|struct_missing={miss}").strip("|")
+
         return res
     except Exception as exc:  # noqa: BLE001 - on veut le statut, pas un crash global
         res["status"] = "error"
@@ -250,7 +294,8 @@ def main():
         ct_src = os.path.join(args.vols_dir, cid + ".nii.gz")
         mask_src = os.path.join(args.masks_dir, cid + ".nii.gz")
         tasks.append((cid, ct_src, mask_src, args.out_dir, args.ich_label,
-                      args.copy_ct, args.overwrite, args.dry_run))
+                      args.copy_ct, args.overwrite, args.dry_run,
+                      args.with_structures, args.organ_masks_dir, args.totalseg_prefix))
 
     results = []
     if args.workers > 1:
@@ -294,10 +339,24 @@ def main():
                 w.writerow(r)
         print(f"\nManifest -> {manifest}")
 
-        yaml_path = os.path.join(args.out_dir, "label_names_ich.yaml")
-        with open(yaml_path, "w") as fh:
-            fh.write("- ich_lesion\n")
-        print(f"Classes  -> {yaml_path}  (stage 1 : 1 classe = ich_lesion)")
+        if args.with_structures:
+            # STAGE 2 : 13 classes = 12 structures + ich_lesion (triees, cf. label_names_ich_full.yaml)
+            classes = sorted(STRUCTURES + ["ich_lesion"])
+            yaml_path = os.path.join(args.out_dir, "label_names_ich_full.yaml")
+            with open(yaml_path, "w") as fh:
+                for c in classes:
+                    fh.write(f"- {c}\n")
+            print(f"Classes  -> {yaml_path}  (stage 2 : {len(classes)} classes)")
+            # recap structures manquantes
+            miss_cases = sum(1 for r in results if "struct_missing" in r.get("detail", ""))
+            if miss_cases:
+                print(f"  ATTENTION : {miss_cases} cas avec >=1 structure manquante "
+                      f"(voir colonne 'detail' du manifest).")
+        else:
+            yaml_path = os.path.join(args.out_dir, "label_names_ich.yaml")
+            with open(yaml_path, "w") as fh:
+                fh.write("- ich_lesion\n")
+            print(f"Classes  -> {yaml_path}  (stage 1 : 1 classe = ich_lesion)")
 
 
 if __name__ == "__main__":

@@ -46,81 +46,78 @@ def normalize_no_lesion(col: pd.Series) -> pd.Series:
 
     return out
 
-def clean_ufo(reports,annotated_tumors,limit_healthy=True):
-    """
-    This function gets a list of reports and removes cases of no interest:
-    - We get the healthy patients
-    - We get, for each tumor we have annotated organs, all reports that have known tumor size
-    - We remove, for organs that have rignr and left (adrenal glands, kidneys), the reports that have unknown sub-segment (not right or left)
-    Then, we print the number of useful cases per tumor
-    """
-    
-    #drop LLM hallucinations
-    print(f'Number of BDMAP ID input: {reports["BDMAP_ID"].nunique()}')
-    hallucination=reports[(reports['Tumor Size (mm)'].astype(str).str.contains(r'^0\.0\s*x', regex=True, na=False)) | (reports['Tumor Size (mm)']=='0.0') | (reports['Tumor Size (mm)']=='0')]
-    reports = reports[~reports['BDMAP_ID'].isin(hallucination['BDMAP_ID'].tolist())]
-    print(f'Number of BDMAP ID after dropping LLM hallucinations: {reports["BDMAP_ID"].nunique()}')
+def _list_case_ids(root):
+    """Liste les IDs de cas d'un dossier npz/npy R-Super, sans supposer de prefixe 'BDMAP'.
+    Un ID est un stem X tel que X{.npz|.npy} ET X_gt{.npz|.npy} existent tous les deux.
+    (Notre pipeline ICH nomme <ID>.npz + <ID>_gt.npz avec un ID arbitraire.)"""
+    if root is None or not os.path.isdir(root):
+        return []
+    files = set(os.listdir(root))
+    ids = set()
+    for f in files:
+        for ext in ('.npz', '.npy'):
+            if f.endswith('_gt' + ext):
+                stem = f[:-len('_gt' + ext)]
+                if (stem + '.npz') in files or (stem + '.npy') in files:
+                    ids.add(stem)
+                break
+    return sorted(ids)
 
-    #ignore TUMORS (not patients here) in organs not in annotated_tumors
-    reports = reports[reports['Standardized Organ'].isin(annotated_tumors) | normalize_no_lesion(reports['no lesion'])]
+
+def clean_ufo(reports, annotated_tumors, limit_healthy=True):
+    """
+    ICH (stage 2) : filtre les rapports. On garde :
+      - les cas sains (no lesion == True) ;
+      - les cas avec >=1 lesion dont TOUTES les lesions ont une taille CONNUE
+        (Unknow Tumor Size == 'no', -> volume calculable) ET une region MAPPEE
+        (Standardized Location != 'UNMAPPED', -> chosen_segment_mask construisible).
+    Un cas est JETE si une seule de ses lesions viole ces deux conditions : c'est le
+    meme principe que R-Super (on ne peut pas superviser un volume/une region inconnus).
+    Difference avec R-Super : PAS de contrainte gauche/droite (les masques de structures
+    cerebrales TotalSegmentator ne sont pas splittes L/R -> organs_need_lr supprime).
+    Nos metadonnees (report_to_rsuper_metadata.py) n'ont pas de colonne 'Tumor Size (mm)' ;
+    on s'appuie sur 'Unknow Tumor Size' + 'volume_mm3' + 'Standardized Location'.
+    """
+    print(f'Number of BDMAP ID input: {reports["BDMAP_ID"].nunique()}')
+
+    # 1) ne garder que les lesions des organes consideres (brain) ou les cas sains
+    healthy = normalize_no_lesion(reports['no lesion'])
+    reports = reports[reports['Standardized Organ'].isin(annotated_tumors) | healthy]
     print(f'Number of BDMAP ID after dropping tumors not considered here: {reports["BDMAP_ID"].nunique()}')
 
-    #now drop from reports any CT scan (BDMAP_ID) where any row has no number in 'Tumor Size (mm)' or 'Unknow Tumor Size' is not 'no'
-    # consider only tumor rows (exclude healthy)
-    is_healthy = normalize_no_lesion(reports['no lesion'])
-    tumor_rows = ~is_healthy
+    # 2) jeter tout cas dont une lesion est inexploitable (taille inconnue OU region non mappee)
+    healthy = normalize_no_lesion(reports['no lesion'])
+    tumor_rows = ~healthy
+    unknown_size = reports['Unknow Tumor Size'].astype(str).str.strip().str.lower().ne('no')
+    loc = reports['Standardized Location'].astype(str).str.strip()
+    bad_loc = loc.isin(['UNMAPPED', 'nan', 'u', ''])
+    bad_ids = reports.loc[tumor_rows & (unknown_size | bad_loc), 'BDMAP_ID'].unique()
+    reports = reports[~reports['BDMAP_ID'].isin(bad_ids)]
+    print(f'Number of BDMAP ID after removing unusable lesions (unknown size / unmapped region): {reports["BDMAP_ID"].nunique()}')
 
-    # rows where size has no numeric digit OR 'Unknow Tumor Size' is not 'no'
-    size_str = reports['Tumor Size (mm)'].astype(str)
-    has_digit = size_str.str.contains(r'\d', regex=True, na=False)
-    unknown_not_no = reports['Unknow Tumor Size'].astype(str).str.strip().str.lower().ne('no')
-
-    bad_size_rows = tumor_rows & (~has_digit | unknown_not_no)
-    bad_size_ids = reports.loc[bad_size_rows, 'BDMAP_ID'].unique()
-
-    # laterality requirement for specific organs
-    organs_need_lr = {'kidney', 'adrenal_gland', 'lung', 'breast', 'femur'}
-    need_lr_rows = tumor_rows & reports['Standardized Organ'].isin(organs_need_lr)
-
-    loc_str = reports['Standardized Location'].astype(str).str.lower()
-    has_lr = loc_str.str.contains('left', na=False) | loc_str.str.contains('right', na=False)
-    bad_lr_rows = need_lr_rows & ~has_lr
-    bad_lr_ids = reports.loc[bad_lr_rows, 'BDMAP_ID'].unique()
-
-    # drop all offending BDMAP_IDs
-    drop_ids = set(bad_size_ids).union(bad_lr_ids)
-    reports = reports[~reports['BDMAP_ID'].isin(drop_ids)]
-    print(f'Number of BDMAP ID after removing cases w/o size: {reports["BDMAP_ID"].nunique()}')
-
+    # 3) comptage par organe + cas sains
     interest = {}
-    
     for organ in annotated_tumors:
-        interest[organ] = reports[reports['Standardized Organ'] == organ]
-        interest[organ] = interest[organ][~interest[organ]['Tumor Size (mm)'].isin(['u','U'])]
-        interest[organ] = interest[organ][interest[organ]['Tumor Size (mm)'] != 'multiple']
-        interest[organ] = interest[organ][interest[organ]['Unknow Tumor Size'] == 'no']
-        if organ in ['kidney','adrenal_gland','lung','breast','femur']:
-            interest[organ] = interest[organ][interest[organ]['Standardized Location'].str.contains('right') | interest[organ]['Standardized Location'].str.contains('left')]
-        print('Number of useful cases for %s: %s'%(organ, interest[organ]['BDMAP_ID'].nunique()))
+        sub = reports[(reports['Standardized Organ'] == organ) & (~normalize_no_lesion(reports['no lesion']))]
+        interest[organ] = sub
+        print('Number of useful cases for %s: %s' % (organ, sub['BDMAP_ID'].nunique()))
 
-    interest['healthy'] = reports[reports['no lesion'] == True]
+    interest['healthy'] = reports[normalize_no_lesion(reports['no lesion'])]
     if limit_healthy:
-        #limit number of healthy cases to the maximum of tumor cases we have
-        max_tumor_cases = max([v['BDMAP_ID'].nunique() for k,v in interest.items() if k != 'healthy'])
-        if interest['healthy']['BDMAP_ID'].nunique() > max_tumor_cases:
-            interest['healthy'] = interest['healthy'].sample(n=max_tumor_cases, random_state=42)
+        # limiter les cas sains au maximum de cas-tumeur disponibles (equilibrage)
+        max_tumor_cases = max([v['BDMAP_ID'].nunique() for k, v in interest.items() if k != 'healthy'] + [0])
+        if max_tumor_cases > 0 and interest['healthy']['BDMAP_ID'].nunique() > max_tumor_cases:
+            keep = (interest['healthy']['BDMAP_ID'].drop_duplicates()
+                    .sample(n=max_tumor_cases, random_state=42))
+            interest['healthy'] = interest['healthy'][interest['healthy']['BDMAP_ID'].isin(keep)]
     print('Number of healthy cases:', interest['healthy']['BDMAP_ID'].nunique())
-    #concat
-    tumors_per_type = {}
-    for k,v in interest.items():
-        tumors_per_type[k]=v['BDMAP_ID'].unique().tolist()
-    interest = pd.concat(interest.values())
-    interest = interest.drop_duplicates()
-    print('Total number of useful cases:', interest['BDMAP_ID'].nunique())
-    ids_of_interest = interest['BDMAP_ID'].unique().tolist()
-    
+
+    tumors_per_type = {k: v['BDMAP_ID'].unique().tolist() for k, v in interest.items()}
+    ids_of_interest = pd.concat(interest.values()).drop_duplicates()['BDMAP_ID'].unique().tolist()
+    print('Total number of useful cases:', len(ids_of_interest))
+
     reports = reports[reports['BDMAP_ID'].isin(ids_of_interest)]
-    return reports, ids_of_interest,tumors_per_type
+    return reports, ids_of_interest, tumors_per_type
 
 class ICHReportsDataset(Dataset):
     def __init__(self, args, mode='train', seed=0, all_train=False,
@@ -129,7 +126,7 @@ class ICHReportsDataset(Dataset):
                  load_augmented=False,
                  gigantic_length=True,
                  save_augmented=False,
-                 tumor_classes=['kidney','pancreas'],
+                 tumor_classes=['brain'],
                  balance_supervision=True,
                  UFO_only=False,
                  Atlas_only=False):    
@@ -154,18 +151,13 @@ class ICHReportsDataset(Dataset):
         assert mode in ['train', 'test']
         self.counter=0
 
-        atlas_name_list = list(set([f[:len('BDMAP_00000000')] for f in os.listdir(args.data_root) if 'BDMAP' in f and '_gt' in f]))
-        atlas_name_list_2 = list(set([f[:len('BDMAP_00000000')] for f in os.listdir(args.data_root) if 'BDMAP' in f and '_gt' not in f]))
-        atlas_name_list = list(set(atlas_name_list).intersection(set(atlas_name_list_2)))
-           #print('Number of Atlas Images:', len(atlas_name_list), flush=True, file=sys.stderr)
-        img_name_list_UFO = list(set([f[:len('BDMAP_00000000')] for f in os.listdir(args.UFO_root) if 'BDMAP' in f and '_gt' in f]))
-        img_name_list_UFO_2 = list(set([f[:len('BDMAP_00000000')] for f in os.listdir(args.UFO_root) if 'BDMAP' in f and '_gt' not in f]))
-        img_name_list_UFO = list(set(img_name_list_UFO).intersection(set(img_name_list_UFO_2)))
-           #print('UFO root:', args.UFO_root, flush=True, file=sys.stderr)
-           #print('Number of UFO Images:', len(img_name_list_UFO), flush=True, file=sys.stderr)
+        # data_root = dataset-MASQUES (Atlas ICH : CT + lesion per-voxel)
+        # UFO_root  = dataset-RAPPORTS (CT + structures, PAS de lesion per-voxel)
+        atlas_name_list = _list_case_ids(args.data_root)
+        img_name_list_UFO = _list_case_ids(args.UFO_root)
 
-        #from reports, get only those in the dataset
-        ids = [case.replace('_0000.nii.gz','').replace('.nii.gz','') for case in img_name_list_UFO]
+        # IDs des cas-rapports (= stems npz, ils correspondent a BDMAP_ID des metadonnees)
+        ids = list(img_name_list_UFO)
         print('NUMBER OF UFO IDs img_name_list_UFO:', len(ids), flush=True, file=sys.stderr)
 
         if args.ucsf_ids is not None:
@@ -321,7 +313,9 @@ class ICHReportsDataset(Dataset):
             lesion_classes = []
             for i, c in enumerate(classes):
                 if 'lesion' in c.lower():
-                    if c.lower().replace('_lesion','').replace('pancreatic','pancreas') in tumor_classes:
+                    region = c.lower().replace('_lesion', '').replace('pancreatic', 'pancreas')
+                    # ICH : 'ich_lesion' -> la lesion appartient au 'brain'.
+                    if region in tumor_classes or ('brain' in tumor_classes):
                         lesion_classes.append(i)
             self.lesion_classes = lesion_classes
             print('Lesion classes:', lesion_classes)
@@ -356,35 +350,23 @@ class ICHReportsDataset(Dataset):
             
             
         if UFO_only:
-            #UFO list may include atlas itens IF atlas is the seed dataset
+            # la liste UFO peut inclure des cas Atlas (si Atlas est le dataset-graine) -> les retirer
             tmp=[]
-            atlas_ids = [x for x in os.listdir(args.data_root) if 'BDMAP' in x]
+            atlas_ids = _list_case_ids(args.data_root)
             for filename in self.img_list:
-                skip = False
-                for atlas in atlas_ids:
-                    id_=atlas[atlas.rfind('BDMAP'):atlas.rfind('BDMAP')+len('BDMAP_12345678')]
-                    #assert id_ not in filename, f"Found forbidden ID '{id_}' in filename '{filename}'"
-                    if id_ in filename:
-                        skip = True
-                        break    # stop checking more IDs
-                if not skip:
+                base = os.path.basename(filename)
+                if not any(a in base for a in atlas_ids):
                     tmp.append(filename)
             print('Removed cases:', len(self.img_list)-len(tmp),flush=True)
             print('Remaining cases:', len(tmp),flush=True)
             self.img_list = tmp
-            
+
         if Atlas_only:
             tmp=[]
-            ufo_ids = [x for x in os.listdir(args.UFO_root) if 'BDMAP' in x]
-            for filename in self.img_list:  
-                skip = False
-                for ufo in ufo_ids:
-                    id_=ufo[ufo.rfind('BDMAP'):ufo.rfind('BDMAP')+len('BDMAP_12345678')]
-                    #assert id_ not in filename, f"Found forbidden ID '{id_}' in filename '{filename}'"
-                    if id_ in filename:
-                        skip = True
-                        break
-                if not skip:
+            ufo_ids = _list_case_ids(args.UFO_root)
+            for filename in self.img_list:
+                base = os.path.basename(filename)
+                if not any(u in base for u in ufo_ids):
                     tmp.append(filename)
             print('Removed cases:', len(self.img_list)-len(tmp),flush=True)
             print('Remaining cases:', len(tmp),flush=True)
@@ -393,7 +375,12 @@ class ICHReportsDataset(Dataset):
         print(f'Number of images in {self.mode} set:', len(self.img_list), flush=True, file=sys.stderr)
         
     def read_report(self, idx):
-        id = self.img_list[idx][self.img_list[idx].find('BDMAP_'):self.img_list[idx].find('BDMAP_')+len('BDMAP_00001111')]
+        # ID = stem du npz (<ID>.npz / <ID>_gt.npz), sans supposer de prefixe 'BDMAP'.
+        id = os.path.basename(self.img_list[idx])
+        for suf in ('_gt.npz', '_gt.npy', '.npz', '.npy'):
+            if id.endswith(suf):
+                id = id[:-len(suf)]
+                break
         if id not in self.reports['BDMAP_ID'].values:
             #print('ID is: ',id)
             raise ValueError('ID is not in the reports:', id, 'Length of reports:', len(self.reports))
@@ -583,18 +570,6 @@ class ICHReportsDataset(Dataset):
         
         
         
-        forg=[]
-        for c in self.tumor_class_names:
-            if 'pancrea' in c:
-                forg.append('pancreas')
-            elif 'kidney' in c:
-                forg.append('kidney_right')
-                forg.append('kidney_left')
-            elif 'gall' in c:
-                forg.append('gall_bladder')
-            else:
-                forg.append(c)
-        forg = list(set(forg))
         #now we need the indexes
         if ufo:
             cls = self.classes_UFO
@@ -602,7 +577,23 @@ class ICHReportsDataset(Dataset):
         else:
             cls = self.classes
             lesion_classes = self.lesion_classes
-        forg = [cls.index(c) for c in forg]#we have only atlas here
+
+        # foreground = canaux sur lesquels centrer le crop.
+        # ICH : 'brain' n'est pas un canal -> on prend TOUTES les structures cerebrales
+        # (tous les canaux SAUF la lesion) pour garder le crop dans l'anatomie du cerveau.
+        forg = []
+        for c in self.tumor_class_names:
+            if c == 'brain':
+                forg += [i for i, cc in enumerate(cls) if 'lesion' not in cc.lower()]
+            elif 'pancrea' in c and 'pancreas' in cls:
+                forg.append(cls.index('pancreas'))
+            elif 'kidney' in c:
+                forg += [cls.index(k) for k in ('kidney_right', 'kidney_left') if k in cls]
+            elif 'gall' in c and 'gall_bladder' in cls:
+                forg.append(cls.index('gall_bladder'))
+            elif c in cls:
+                forg.append(cls.index(c))
+        forg = sorted(set(forg))
         
         if tumor_case is None:
             tumor_case = tensor_lab[:,lesion_classes].sum()>0
@@ -679,7 +670,8 @@ class ICHReportsDataset(Dataset):
                 print('Pancreas subseg removed', flush=True, file=sys.stderr)
                 if not self.args.pancreas_only:
                     raise ValueError('no_pancreas_subseg only implemented for pancreas_only. If we remove kidney segment we will have a problem, as right and left are seen as segments')
-            tumor_sizes = tumors['Tumor Size (mm)'].tolist()
+            # ICH : pas de colonne 'Tumor Size (mm)'. Taille inconnue <=> Unknow Tumor Size != 'no'.
+            tumor_unknown = tumors['Unknow Tumor Size'].astype(str).str.strip().str.lower().ne('no').tolist()
             tumor_organs = tumors['Standardized Organ'].tolist()
             
             #print('UFO: No lesion Case?', tumors['no lesion'].values[0], flush=True, file=sys.stderr)
@@ -691,7 +683,7 @@ class ICHReportsDataset(Dataset):
             #and which subsegments have unknown size
             subseg_with_unk_tumor_size = []
             for i in list(range(len(tumor_organs))):
-                if pd.isna(tumor_sizes[i]) or tumor_sizes[i] == 'u' or tumor_sizes[i]=='multiple':
+                if tumor_unknown[i]:
                     organs_with_unk_tumor_size.append(tumor_organs[i])
                     subseg_with_unk_tumor_size.append(tumor_segments[i])
                 if pd.isna(tumor_segments[i]) or tumor_segments[i] == 'u':
@@ -761,17 +753,10 @@ class ICHReportsDataset(Dataset):
         if not isinstance(tumor_segment, list):
             tumor_segment = [tumor_segment]
 
-        if len(tumor_segment)==1 and tumor_segment[0] == 'pancreas':
-            #pancreas is a special case, we have pancreas labels but they are not in the atlas format
-            #we assign all pancreas labels to 1
-            tumor_segment = ['head','body','tail']
-        if len(tumor_segment)==1 and tumor_segment[0] == 'liver':
-            #liver is a special case, we have liver labels but they are not in the atlas format
-            #we assign all liver labels to 1
-            tumor_segment = ['segment 1','segment 2','segment 3','segment 4','segment 5','segment 6','segment 7','segment 8']
-        
-        #get the labels of the tumor segment
-        segment_labels=[seg.replace('segment ','liver_segment_').replace('head','pancreas_head').replace('body','pancreas_body').replace('tail','pancreas_tail').replace('left','kidney_left').replace('right','kidney_right') for seg in tumor_segment]
+        # ICH : la localisation du rapport (Standardized Location) EST deja le nom du
+        # masque structure (frontal_lobe, thalamus, ventricle, ...). Aucun remapping,
+        # contrairement au pancreas/foie/rein de R-Super.
+        segment_labels = list(tumor_segment)
 
         #print('Segment labels are:', segment_labels, flush=True, file=sys.stderr)
         for label in segment_labels:
@@ -815,18 +800,11 @@ class ICHReportsDataset(Dataset):
         assert segment_mask.sum().item()!=0.0, f'problem in case {self.current_sample}, segment_mask is empty, crop is in {tumor_segment}'
         #apply it to the lesion classes
         segment_mask_lesion_ch = []
-        #print('Segment is:', tumor_segment, flush=True, file=sys.stderr)
+        # ICH : la region (union des structures citees par le rapport) va dans le canal
+        # 'ich_lesion' ; tous les autres canaux (structures) = 0.
         for c in self.classes:
-            if (any('segment' in item for item in tumor_segment) or any('liver' in item for item in tumor_segment)) and 'liver_lesion' in c:
+            if 'ich_lesion' in c:
                 segment_mask_lesion_ch.append(segment_mask)
-                #print('Segment added to class:', c, flush=True, file=sys.stderr)
-            elif (any('head' in item for item in tumor_segment) or any('body' in item for item in tumor_segment) or any('tail' in item for item in tumor_segment) or any('pancreas' in item for item in tumor_segment))\
-                  and 'pancreatic_lesion' in c:
-                segment_mask_lesion_ch.append(segment_mask)
-                #print('Segment added to class:', c, flush=True, file=sys.stderr)
-            elif (any('left' in item for item in tumor_segment) or any('right' in item for item in tumor_segment) or any('kidney' in item for item in tumor_segment)) and 'kidney_lesion' in c:
-                segment_mask_lesion_ch.append(segment_mask)
-                #print('Segment added to class:', c, flush=True, file=sys.stderr)
             else:
                 segment_mask_lesion_ch.append(torch.zeros_like(tensor_lab[0]).type_as(tensor_lab))
         segment_mask_lesion_ch = torch.stack(segment_mask_lesion_ch,axis=0)
@@ -1161,142 +1139,62 @@ class ICHReportsDataset(Dataset):
         Tumor labels with a corresponding tumor segment in the crop -> assign to unk_channels (we do not know where the tumor is).
         Tumor labels withour corresponding tumor segment in the crop -> assign label 0 (negative for tumor in the crop).
         """
-        clss_to_idx = {clss: i for i, clss in enumerate(self.classes)}
+        # ICH : le dataset-RAPPORTS fournit les 12 structures per-voxel ; la lesion n'est
+        # PAS annotee. On reconstruit le label au format self.classes (structures + ich_lesion)
+        # et on marque comme INCONNUS (unk=1) les voxels ou la BCE ne doit pas s'appliquer.
         clss_UFO_to_idx = {clss: i for i, clss in enumerate(self.classes_UFO)}
-        all_data,tumor_dict=self.get_tumor_segment_labels(idx)
-        tumor_segments=all_data['tumor_segments']
-        for tumor_organ in all_data['tumor_organs']:
-            if isinstance(tumor_organ,str) and tumor_organ=='liver':
-                if not any('segment' in item for item in tumor_segments):
-                    if 'liver' not in tumor_segments:
-                        tumor_segments.append('liver')
-            elif isinstance(tumor_organ,str) and tumor_organ=='pancreas':
-                if not any('head' in item for item in tumor_segments) and not any('body' in item for item in tumor_segments) and not any('tail' in item for item in tumor_segments):
-                    if 'pancreas' not in tumor_segments:
-                        tumor_segments.append('pancreas')
-            elif isinstance(tumor_organ,str) and tumor_organ=='kidney':
-                if not any('left' in item for item in tumor_segments) and not any('right' in item for item in tumor_segments):
-                    if 'kidney' not in tumor_segments:
-                        tumor_segments.append('kidney')
+        all_data, tumor_dict = self.get_tumor_segment_labels(idx)
 
-        #flatten the list of lists
-        tmp=[]
-        for item in tumor_segments:
+        # regions (structures) portant une lesion dans TOUT le CT -> liste aplatie de noms.
+        # tumor_segments est une liste de listes (clean_subseg_list : split sur ' / ').
+        tumor_regions = set()
+        for item in all_data['tumor_segments']:
             if isinstance(item, list):
-                for subitem in item:
-                    tmp.append(subitem)
-            else:
-                if item == 'pancreas':
-                    for it in ['head','body','tail']:
-                        tmp.append(it)
-                elif item == 'liver':
-                    for it in ['segment 1','segment 2','segment 3','segment 4','segment 5','segment 6','segment 7','segment 8']:
-                        tmp.append(it)
-                elif item =='kidney':
-                    for it in ['left','right']:
-                        tmp.append(it)
-                else:
-                    tmp.append(item)
-        tumor_segments=tmp
+                tumor_regions.update(x for x in item if isinstance(x, str))
+            elif isinstance(item, str):
+                tumor_regions.add(item)
+        tumor_regions = [r for r in tumor_regions if r in clss_UFO_to_idx]
 
-        tumor_segments=list(set(tumor_segments))
-        #convert to standard label names:
-        tumor_segments=[seg.replace('segment ','liver_segment_').replace('head','pancreas_head').replace('body','pancreas_body').replace('tail','pancreas_tail').replace('left','kidney_left').replace('right','kidney_right') for seg in tumor_segments]
-        #tumor_segments represents all organ/subsegments with tumors in the whole ct
-        #which lesion classes to add unk? check which of the tumor_segments are in the crop.
-        unk_segments={'liver':torch.zeros((tensor_lab.shape[-3],tensor_lab.shape[-2],tensor_lab.shape[-1])).type_as(tensor_lab),
-                      'pancreas':torch.zeros((tensor_lab.shape[-3],tensor_lab.shape[-2],tensor_lab.shape[-1])).type_as(tensor_lab),
-                      'kidney':torch.zeros((tensor_lab.shape[-3],tensor_lab.shape[-2],tensor_lab.shape[-1])).type_as(tensor_lab)}
-        #this variable will create a mask of the segments in the crop that have tumors in unknown locations (report annotation)
-        
-        unk_lesions=[]
-        for seg in tumor_segments:
-            seg_idx=clss_UFO_to_idx[seg]
-            if tensor_lab[seg_idx].max()>0:
-                if 'liver' in seg:
-                    unk_segments['liver'][tensor_lab[seg_idx]>0]=1
-                elif 'pancreas' in seg:
-                    unk_segments['pancreas'][tensor_lab[seg_idx]>0]=1
-                    #print(f"we have included to unk_segments[pancreas] the segment {seg}, the sum of unk_segments['pancreas'] is {unk_segments['pancreas'].sum().item()}", flush=True, file=sys.stderr)
-                elif 'kidney' in seg:
-                    unk_segments['kidney'][tensor_lab[seg_idx]>0]=1
-                else:
-                    raise ValueError('Unrecognized segment:',seg)
-                #there is a tumor segment in the crop
-                #what is the organ of the tumor segment?
-                if '_segment' in seg:
-                    organ=seg[:seg.rfind('_segment')]
-                else:
-                    organ=seg
-                organ=organ.replace('_head','').replace('_body','').replace('_tail','').replace('pancreas','pancreatic')
-                unk_lesions.append(organ)
-        unk_lesions=list(set(unk_lesions))
-        #print('unk lesions:', unk_lesions, flush=True, file=sys.stderr)
+        # masque des voxels "structure-lesion presente DANS LE CROP" (localisation per-voxel
+        # inconnue -> la volume/ball loss s'en charge, la BCE doit les ignorer).
+        unk_lesion_region = torch.zeros(tensor_lab[0].shape).type_as(tensor_lab[0])
+        lesion_in_crop = False
+        for r in tumor_regions:
+            r_idx = clss_UFO_to_idx[r]
+            if tensor_lab[r_idx].max() > 0:
+                unk_lesion_region[tensor_lab[r_idx] > 0] = 1
+                lesion_in_crop = True
 
-        unk_channels={}
-        unk_channels_list=[]
-        label=[]
-        #print('Shape of tensor_lab before assigning labels:', tensor_lab.shape, flush=True, file=sys.stderr)
+        unk_channels = {}
+        unk_channels_list = []
+        label = []
         assert len(tensor_lab.shape) == 4
-        #print(f'Iterating over these classes: {self.classes}', flush=True, file=sys.stderr)
-        for j,clss in enumerate(self.classes,0):
-            if clss in self.classes_UFO:
+        for j, clss in enumerate(self.classes, 0):
+            if clss in clss_UFO_to_idx:
+                # structure connue per-voxel -> label = masque, rien d'inconnu
                 label.append(tensor_lab[clss_UFO_to_idx[clss]])
                 unk_channels_list.append(torch.zeros(tensor_lab[0].shape).type_as(tensor_lab[0]))
-            else:
-                if 'lesion' not in clss.lower():
-                    if clss=='liver':
-                        #join all liver segments
-                        l=torch.zeros(tensor_lab[0].shape).type_as(tensor_lab[0])
-                        for i in [1,2,3,4,5,6,7,8]:
-                            l=torch.logical_or(l,tensor_lab[clss_UFO_to_idx['liver_segment_%i'%i]])
-                        label.append(l)
-                        unk_channels_list.append(torch.zeros(tensor_lab[0].shape).type_as(tensor_lab[0]))#this channel is knwon, assign zero to unk_channels_list
-                    elif clss=='pancreas':
-                        #join all pancreas segments
-                        l=torch.zeros(tensor_lab[0].shape).type_as(tensor_lab[0])
-                        for i in ['head','body','tail']:
-                            l=torch.logical_or(l,tensor_lab[clss_UFO_to_idx['pancreas_%s'%i]])
-                        label.append(l)
-                        unk_channels_list.append(torch.zeros(tensor_lab[0].shape).type_as(tensor_lab[0]))#this channel is knwon, assign zero to unk_channels_list
-                    else:
-                        label.append(torch.zeros(tensor_lab[0].shape).type_as(tensor_lab[0]))
-                        unk_channels[clss]=j
-                        unk_channels_list.append(torch.ones(tensor_lab[0].shape).type_as(tensor_lab[0]))#no pixel is known for this channel, assign 1 to unk_channels_list
-
+            elif 'lesion' in clss.lower():
+                # ich_lesion : aucune annotation per-voxel. Inconnu sur les structures
+                # rapportees presentes dans le crop ; background connu ailleurs.
+                label.append(torch.zeros(tensor_lab[0].shape).type_as(tensor_lab[0]))
+                unk_channels[clss] = j
+                if lesion_in_crop:
+                    unk_channels_list.append(unk_lesion_region)
                 else:
-                    #check if there is a tumorous segment for this lesion in the crop
-                    #print(f'Iterating on lesion class {clss}', flush=True, file=sys.stderr)
-                    tumor_present=False
-                    for organ in unk_lesions:
-                        if organ in clss:
-                            label.append(torch.zeros(tensor_lab[0].shape).type_as(tensor_lab[0]))
-                            unk_channels[clss]=j
-                            if 'liver' in clss:
-                                unk_channels_list.append(unk_segments['liver'])#make only the pixels with unknown tumor location be 1, background pixels are 0
-                            elif 'pancreatic' in clss:
-                                #print(f'We have included the unk_segments[pancreas] in unk_channels_list')
-                                unk_channels_list.append(unk_segments['pancreas'])#make only the pixels with unknown tumor location be 1, background pixels are 0
-                            elif 'kidney' in clss:
-                                unk_channels_list.append(unk_segments['kidney'])#make only the pixels with unknown tumor location be 1, background pixels are 0
-                            else:
-                                raise ValueError('Organ not recognized:',clss)
-                            tumor_present=True
-                            break
-                    #if not:
-                    #assign label 0
-                    if not tumor_present:
-                        #negative for the tumor
-                        label.append(torch.zeros(tensor_lab[0].shape).type_as(tensor_lab[0]))
-                        unk_channels_list.append(torch.zeros(tensor_lab[0].shape).type_as(tensor_lab[0]))
-        label=torch.stack(label,dim=0)
-        unk_channels_list=torch.stack(unk_channels_list,0)
+                    unk_channels_list.append(torch.zeros(tensor_lab[0].shape).type_as(tensor_lab[0]))
+            else:
+                # classe non-lesion absente du dataset UFO -> entierement inconnue
+                label.append(torch.zeros(tensor_lab[0].shape).type_as(tensor_lab[0]))
+                unk_channels[clss] = j
+                unk_channels_list.append(torch.ones(tensor_lab[0].shape).type_as(tensor_lab[0]))
+
+        label = torch.stack(label, dim=0)
+        unk_channels_list = torch.stack(unk_channels_list, 0)
         assert len(label.shape) == 4
-        #print('Shape of tensor_lab after assigning labels:', label.shape, flush=True, file=sys.stderr)
-        #print('Unk channels:', unk_channels, flush=True, file=sys.stderr)
-        if len(unk_lesions)>0:
-            assert unk_channels_list.sum()>0, f'unk_channels_list should have some non-zero voxels if there are tumors in the crop, case {self.current_sample}, we have tumors in {unk_lesions} and unk_channels_list.sum={unk_channels_list.sum().item()}'
-        return label,unk_channels,unk_channels_list.type_as(label)
+        if lesion_in_crop:
+            assert unk_channels_list.sum() > 0, f'unk_channels_list vide malgre une lesion dans le crop, cas {self.current_sample}'
+        return label, unk_channels, unk_channels_list.type_as(label)
     
     def define_unknown_voxels(self, label, idx):
         """
@@ -1308,6 +1206,7 @@ class ICHReportsDataset(Dataset):
         clss_to_idx = {clss: i for i, clss in enumerate(self.classes)}
         clss_UFO_to_idx = {clss: i for i, clss in enumerate(self.classes_UFO)}
         tensor_lab = []
+        bkg = None  # ICH : pas de canal 'background' dans classes_UFO (12 structures)
         for j,clss in enumerate(self.classes_UFO,0):
             ##print('j:',j,flush=True, file=sys.stderr)
             ##print('clss:',clss,flush=True, file=sys.stderr)
@@ -1318,8 +1217,9 @@ class ICHReportsDataset(Dataset):
             else:
                 tensor_lab.append(label[clss_to_idx[clss]])
         tensor_lab=torch.stack(tensor_lab,dim=0)
-        #add to background the opposite of all other classes
-        tensor_lab[bkg]=(tensor_lab.sum(dim=0)>0).type_as(tensor_lab[0])
+        #add to background the opposite of all other classes (seulement si un canal background existe)
+        if bkg is not None:
+            tensor_lab[bkg]=(tensor_lab.sum(dim=0)>0).type_as(tensor_lab[0])
         
 
         #now we can use the assign_labels function
@@ -1335,85 +1235,52 @@ class ICHReportsDataset(Dataset):
 
     def estimate_tumor_volume(self, idx, tumor_segment_crop):
         """
-        Estimates tumor volume from reports. For the segment in the crop.
-        Always returns a list of 10 items, padding with 0.
+        ICH : lit le volume (volume_mm3 = ABC/2) et les diametres (diameter_mm_{1,2,3})
+        DEJA calcules par report_to_rsuper_metadata.py, pour les lesions entierement
+        contenues dans la region du crop (tumor_segment_crop). Contrairement a R-Super,
+        on ne re-parse PAS 'Tumor Size (mm)' (colonne absente de nos metadonnees).
+        Retourne toujours >=10 items (padding a 0) + un tenseur (N,3) de diametres (mm).
+        A 1mm iso : mm3 = nombre de voxels (ce qu'attend la volume-loss).
         """
-        _,tumor_dict=self.get_tumor_segment_labels(idx)
-        #print('Tumor dict:', tumor_dict)
-        #print all column names in tumor_dict
-        #print(tumor_dict.columns)
-        #print('Sizes:',tumor_dict['Tumor Size (mm)'])
-        #print('Cropped on tumor segment:', tumor_segment_crop)
-        if tumor_segment_crop is None or tumor_segment_crop=='random':
-            return [0,0,0,0,0,0,0,0,0,0], torch.zeros((10,3)).float() #CT not cropped around a tumor segment
-        
-        if isinstance(tumor_segment_crop, list):
-            pass
-        elif isinstance(tumor_segment_crop, str):
-            tumor_segment_crop=[tumor_segment_crop]
-        else:
+        _, tumor_dict = self.get_tumor_segment_labels(idx)
+        if tumor_segment_crop is None or tumor_segment_crop == 'random':
+            return [0]*10, torch.zeros((10, 3)).float()  # crop pas centre sur une region-lesion
+
+        if isinstance(tumor_segment_crop, str):
+            tumor_segment_crop = [tumor_segment_crop]
+        elif not isinstance(tumor_segment_crop, list):
             raise ValueError('tumor_segment_crop must be a list or a string.')
-        
-        #is our tumor_segment_crop organ or segment:
-        if 'liver' in "".join(tumor_segment_crop) or 'kidney' in "".join(tumor_segment_crop) or 'pancreas' in "".join(tumor_segment_crop):
-            tpe='organ'
-            col='Standardized Organ'
-        elif 'segment' in "".join(tumor_segment_crop) or 'head' in "".join(tumor_segment_crop) or 'body' in "".join(tumor_segment_crop) or 'tail' in "".join(tumor_segment_crop) or 'left' in "".join(tumor_segment_crop) or 'right' in "".join(tumor_segment_crop):
-            tpe='segment'
-            col='Standardized Location'
-        else:
-            raise ValueError('tumor_segment_crop does not contain organs or segments:', tumor_segment_crop)
-        
-        tumors_in_crop=[]
-        for row in tumor_dict.iterrows():
-            location=row[1][col]
-            #print('Location:',location)
-            if not isinstance(location, str) or location.lower()=='u':
+
+        # ICH : la region du rapport (Standardized Location) EST le nom du masque structure.
+        col = 'Standardized Location'
+
+        volumes = []
+        diameters = []
+        for _, row in tumor_dict.iterrows():
+            # taille inconnue -> volume non supervisable (deja filtre par clean_ufo, on re-verifie)
+            if str(row.get('Unknow Tumor Size', 'yes')).strip().lower() != 'no':
                 continue
-            if '/' in location:
-                location=location.split(' / ')
-            if not isinstance(location, list):
-                location=[location]
-            in_crop=True
-            for loc in location:
-                if loc not in tumor_segment_crop:
-                    in_crop=False
-                    break
-            if in_crop:
-                tumors_in_crop.append(row[1]['Tumor Size (mm)'])
+            location = row.get(col, None)
+            if not isinstance(location, str) or location.strip().lower() in ('u', 'unmapped', 'nan', ''):
+                continue
+            locs = [l.strip() for l in location.split(' / ')]
+            # la lesion ne compte que si TOUTES ses regions sont dans le crop (conservateur)
+            if any(l not in tumor_segment_crop for l in locs):
+                continue
+            vol = row.get('volume_mm3', np.nan)
+            if pd.isna(vol):
+                continue
+            volumes.append(float(vol))
+            d = [row.get('diameter_mm_1', np.nan),
+                 row.get('diameter_mm_2', np.nan),
+                 row.get('diameter_mm_3', np.nan)]
+            diameters.append([float(x) if not pd.isna(x) else 0.0 for x in d])
 
-            #print('Tumors in crop:', tumors_in_crop)#list of strings with sizes
-
-            #print('Tumor dict:',tumor_dict[['Standardized Organ','Standardized Location','Tumor Size (mm)']])
-                
-        #estimate volumes for each tumor size
-        volumes=[]
-        diameters=[]
-        for size in tumors_in_crop:
-            if 'x' not in size:
-                diameter=float(size)
-                volume=(4/3) * math.pi * ((diameter/2) ** 3)#sphere. volume in mm3 (voxels)
-                volumes.append(volume)
-                diameters.append([diameter,diameter,diameter])
-            else:
-                #ellipsoid
-                sizes=size.split(' x ')
-                sizes=[float(s) for s in sizes]
-                if len(sizes)==2:
-                    #assume 3rd axis is the average of the other two
-                    sizes.append(sum(sizes)/2)
-                #ellipsoid volume
-                volume=(4/3) * math.pi * ((sizes[0]/2) * (sizes[1]/2) * (sizes[2]/2))
-                volumes.append(volume)
-                diameters.append(sizes)
-
-        #print('Estimated volumes:',volumes)
-
-        for i in range(len(volumes),10):
+        for _ in range(len(volumes), 10):
             volumes.append(0)
-            diameters.append([0,0,0])
-            
-        return volumes,torch.tensor(diameters).float()
+            diameters.append([0, 0, 0])
+
+        return volumes, torch.tensor(diameters).float()
     
     def SanityAssertOutput(self, tensor_lab, unk_channels_tensor,tumor_volumes_in_crop,chosen_segment_mask,
                             selected_tumor):
@@ -1428,8 +1295,11 @@ class ICHReportsDataset(Dataset):
 
         
         #save examples
-        sample=self.current_sample
-        sample=sample[sample.rfind('BDMAP_'):sample.rfind('.')]
+        sample=os.path.basename(self.current_sample)
+        for suf in ('_gt.npz', '_gt.npy', '.npz', '.npy'):
+            if sample.endswith(suf):
+                sample = sample[:-len(suf)]
+                break
         if self.counter<10:
             if selected_tumor is not None and len(selected_tumor)>0:
                 if isinstance(selected_tumor,list):
@@ -1444,7 +1314,9 @@ class ICHReportsDataset(Dataset):
             self.counter+=1
 
         #assert that unk_channels_tensor and chosen_segment_mask are 0 for all non lesion classes
-        missing_classes=set(classes)-set(self.classes_UFO)-{'liver','pancreas'}
+        # ICH : classes = 12 structures (toutes dans classes_UFO) + ich_lesion -> seule
+        # ich_lesion "manque" cote UFO, et elle est deja captee par le test 'lesion'.
+        missing_classes=set(classes)-set(self.classes_UFO)
         missing_classes=list(missing_classes)
         #print('Missing classes:', missing_classes,flush=True, file=sys.stderr)
         unk_cls=[]
