@@ -445,48 +445,35 @@ def parse_answer(answer: str, prompt_id: int) -> List[Dict[str, str]]:
     fields_template = schema["fields_template"]
     key_aliases = schema["key_aliases"]
 
-    lesions = []
-    
-    # Lecture ligne par ligne au lieu d'une Regex multiline rigide
-    for line in cleaned.split('\n'):
-        # On supprime le gras éventuel (Markdown) et les espaces
-        line = line.replace('**', '').strip()
-        
-        # Une ligne de résultat doit contenir 'type', '=' et des points-virgules ';'
-        if 'type' in line.lower() and '=' in line and ';' in line:
-            fields = dict(fields_template)
-            
-            # Découpage par point-virgule
-            items = line.split(";")
-            for item in items:
-                if "=" not in item:
-                    continue
-                
-                # Le "1" limite le split au premier '=' trouvé, sécurisant les valeurs complexes
-                key, value = item.split("=", 1)
-                
-                # Nettoyage radical de la clé (ex: "1. lesion: type" -> "type")
-                if ":" in key:
-                    key = key.split(":")[-1]  # Garde juste ce qu'il y a après les deux-points
-                    
-                key = key.strip().lower().replace("_", " ")
-                
-                # On nettoie les numéros de liste résiduels (1. , 2. , - , *)
-                key = re.sub(r"^\d+\.?\s*", "", key)
-                key = re.sub(r"^(lesion\s*\d*|\*|-)\s*", "", key).strip()
-                
-                # Alignement final de la clé avec le schéma
-                key = re.sub(r"\s+", " ", key)
-                key = key_aliases.get(key, key).replace(" ", "_")
-                value = value.strip()
-                
-                # Si la clé est valide, on l'enregistre
-                if key in fields:
-                    fields[key] = value
+    # Le LLM met les champs d'une lesion soit sur UNE ligne (a; b; c), soit UN champ par
+    # ligne (liste markdown "- size = ...;"). On decoupe donc en BLOCS-LESION (marqueur
+    # "lesion N") et on extrait TOUS les couples "cle = valeur" du bloc, quelle que soit la
+    # mise en forme. (L'ancien code exigeait 'type' sur chaque ligne-resultat -> il perdait
+    # tous les champs ecrits sur des lignes separees : structure/size/... finissaient en 'U'.)
+    text = cleaned.replace('**', '')
+    blocks = re.split(r'(?im)^\s*[-*>\d.\s]*lesion\s*\d+\s*:?', text)
+    if len(blocks) <= 1:
+        blocks = ['', text]  # pas de marqueur "lesion N" -> tout le texte = 1 bloc
 
-            # Si on a bien capturé une lésion, on l'ajoute à la liste finale
-            if fields.get("type") and fields["type"] != "U":
-                lesions.append(fields)
+    def _norm_key(k: str) -> str:
+        k = k.strip().lower().replace('_', ' ')
+        k = re.sub(r'^[-*>\d.\s]+', '', k)      # puces / numeros residuels
+        k = re.sub(r'\s+', ' ', k).strip()
+        return key_aliases.get(k, k).replace(' ', '_')
+
+    lesions = []
+    for block in blocks[1:]:
+        # on coupe au 1er marqueur de prose pour ne pas aspirer de faux "cle = valeur"
+        # depuis les explications (Justification / Summary / History / ...).
+        block = re.split(r'(?im)^\s*[-*>\s]*(justification|summary|impression|history|'
+                         r'findings|reasoning|explanation)\b', block)[0]
+        fields = dict(fields_template)
+        for m in re.finditer(r'([A-Za-z][A-Za-z _]*?)\s*=\s*([^;\n]+)', block):
+            key = _norm_key(m.group(1))
+            if key in fields:
+                fields[key] = m.group(2).strip().rstrip(';').strip()
+        if fields.get("type") and fields["type"] != "U":
+            lesions.append(fields)
 
     return lesions
 

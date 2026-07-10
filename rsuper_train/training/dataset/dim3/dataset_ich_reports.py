@@ -1300,7 +1300,9 @@ class ICHReportsDataset(Dataset):
             if sample.endswith(suf):
                 sample = sample[:-len(suf)]
                 break
-        if self.counter<10:
+        if os.environ.get('RSUPER_SANITY') and self.counter<10:
+            # debug : ne sauvegarde des labels nii.gz que si RSUPER_SANITY=1 (sinon lent +
+            # ecrivait dans un chemin Alliance en dur -> PermissionError en local).
             if selected_tumor is not None and len(selected_tumor)>0:
                 if isinstance(selected_tumor,list):
                     selected_tumor = selected_tumor[0]
@@ -1398,7 +1400,7 @@ def npy_to_nii(npy_path, nii_path, spacing=(1.0, 1.0, 1.0),labels=None):
 def debug_save_labels(labels: torch.Tensor,
                       name='',
                       label_names = '/projects/bodymaps/Pedro/data/atlas_300_medformer_npy/list/label_names.yaml',
-                      out_dir: str = "/home/pauldcrm/links/scratch/DatasetSanity",
+                      out_dir: str = os.path.join(DEBUG_OUTPUT_ROOT, "DatasetSanity"),
                       batch_idx: int = 0):
     """
     Saves each channel of the specified batch index in `labels` as a .nii.gz file.

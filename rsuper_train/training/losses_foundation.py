@@ -1830,7 +1830,7 @@ def ball_loss(out, labels, unk_voxels, chosen_segment_mask, tumor_volumes, tumor
         if apply_dice_loss:
             losses_dice.append(dice_loss.mean())
 
-        if counter3<10:
+        if SANITY_CHECKS and counter3<10:   # bloc debug : gate par RSUPER_SANITY (etait non-gate
 
             counter3+=1
             sanity_ball_dir = os.path.join(DEBUG_OUTPUT_ROOT, 'SanityBallLoss', str(counter3))
@@ -1885,8 +1885,8 @@ def save_tensor_as_nifti(tensor: torch.Tensor, filename: str):
         
     assert len(tensor.squeeze(0).shape)==3, f"Input tensor should be 3D, got {tensor.shape}"
 
-    # Ensure tensor is on CPU and convert to numpy array.
-    np_array = tensor.detach().cpu().numpy()
+    # Ensure tensor is on CPU and convert to numpy array (.float() : numpy ne gere pas le bf16).
+    np_array = tensor.detach().float().cpu().numpy()
     
     # If the tensor has an extra channel dimension, squeeze it.
     if np_array.ndim == 4 and np_array.shape[0] == 1:

@@ -26,9 +26,9 @@
 # =====================================================================================
 
 #DATA  -- STAGE 2 : >>> CHEMINS A RENSEIGNER QUAND LES DONNEES ARRIVENT <<<
-data_root: /home/pauldcrm/links/scratch/R-SuperCerv/dataset_ich_full_npz/   # Atlas 13 classes
-UFO_root:  /home/pauldcrm/links/scratch/R-SuperCerv/dataset_ich_reports_npz/ # rapports, 12 structures
-reports:   /home/pauldcrm/links/scratch/R-SuperCerv/report_extraction/metadata/ich_per_tumor_metadata.csv
+data_root: /mnt/Data/data_paul/dataset_ich_full_npz_trainval/   # Atlas 13cls TRAINVAL (test exclu) ; override --data_root pour S_X
+UFO_root:  /mnt/Data/data_paul/dataset_ich_reports_npz/         # rapports, 12 structures (tous ; --ucsf_ids restreint au split _0/all)
+reports:   /mnt/Data/data_paul/report_extraction/metadata/ich_per_tumor_metadata.csv
 classes: 13         # 12 structures + ich_lesion (doit == label_names_ich_full.yaml, trie)
 modality: CT
 

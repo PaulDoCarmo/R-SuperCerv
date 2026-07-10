@@ -318,17 +318,19 @@ def train_epoch(trainLoader, net, ema_net, optimizer, epoch, writer, scaler, arg
             scaler.step(optimizer)
             scaler.update()
         else:
-            result = net(img) 
-            loss_all=lf.calculate_loss(model_output=result, label=label, unk_voxels=unk_voxels, args=args,
-                                matcher=matcher,chosen_segment_mask=chosen_segment_mask,tumor_volumes_report=tumor_volumes_in_crop, 
-                                tumor_diameters=tumor_diameters,
-                                classes=trainLoader.dataset.classes,input_tensor=img,
-                                class_weights=class_weights if 'class_weights' in locals() else None,
-                                model_genesis=args.model_genesis_pretrain,
-                                clip_only = args.clip_pretrain, report_embeddings=report_embeddings, dist=dist,
-                                ) # pass class_weights if available, otherwise None
-
-            loss=loss_all['overall']
+            # bf16 autocast (enabled=args.bf16) : ~1.5-2x plus rapide sur Ada ; plage fp32 -> stable
+            # (contrairement au fp16 bloque plus haut) ; PAS de GradScaler necessaire en bf16.
+            with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=args.bf16):
+                result = net(img)
+                loss_all=lf.calculate_loss(model_output=result, label=label, unk_voxels=unk_voxels, args=args,
+                                    matcher=matcher,chosen_segment_mask=chosen_segment_mask,tumor_volumes_report=tumor_volumes_in_crop,
+                                    tumor_diameters=tumor_diameters,
+                                    classes=trainLoader.dataset.classes,input_tensor=img,
+                                    class_weights=class_weights if 'class_weights' in locals() else None,
+                                    model_genesis=args.model_genesis_pretrain,
+                                    clip_only = args.clip_pretrain, report_embeddings=report_embeddings, dist=dist,
+                                    ) # pass class_weights if available, otherwise None
+                loss=loss_all['overall']
             loss.backward()
             
             # Clip gradients before stepping the optimizer.
@@ -380,6 +382,7 @@ def get_parser():
     parser.add_argument('--dimension', type=str, default='2d', help='2d model or 3d model')
     parser.add_argument('--pretrain', action='store_true', help='if use pretrained weight for init')
     parser.add_argument('--amp', action='store_true', help='if use the automatic mixed precision for faster training')
+    parser.add_argument('--bf16', action='store_true', help='autocast bfloat16 pour le forward (RTX Ada) : ~1.5-2x plus rapide, plage fp32 donc pas l instabilite du fp16, sans GradScaler')
     
     parser.add_argument('--batch_size', default=2, type=int, help='batch size')
     parser.add_argument('--resume', action='store_true', help='if resume training from checkpoint')
@@ -599,6 +602,9 @@ def main_worker(proc_idx, ngpus_per_node, fold_idx, args, result_dict=None, trai
             torch.set_deterministic(True)
         torch.backends.cudnn.benchmark = False
         torch.backends.cudnn.deterministic = True
+    else:
+        # tailles d'entree FIXES (patch 128^3) -> cudnn.benchmark accelere les conv 3D (~10-30%)
+        torch.backends.cudnn.benchmark = True
 
     # set process specific info
     args.proc_idx = proc_idx

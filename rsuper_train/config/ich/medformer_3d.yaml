@@ -1,5 +1,5 @@
 #DATA  -- R-SuperCerv stage 1 : segmentation ICH, masques seuls
-data_root: /home/pauldcrm/links/scratch/R-SuperCerv/dataset_ich_npz/
+data_root: /mnt/Data/data_paul/dataset_ich_full_npz_trainval/   # Atlas 13cls TRAINVAL (test exclu) ; override --data_root pour les sous-ensembles S_X
 UFO_root: null      # inutilise au stage 1 (pas de rapports)
 reports: null       # inutilise au stage 1
 classes: 1          # 1 classe : ich_lesion (le vrai nb vient de list/label_names.yaml)
