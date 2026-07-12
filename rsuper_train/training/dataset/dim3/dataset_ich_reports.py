@@ -511,8 +511,15 @@ class ICHReportsDataset(Dataset):
         if self.img_list[idx] in self.UFO_paths:
             #convert to atlas format
             tensor_lab, unk_channels, unk_channels_tensor = self.assign_labels(tensor_lab,idx)
-            tumor_volumes_in_crop,tumor_diameters=self.estimate_tumor_volume(idx,tumor_segment_crop=selected_tumor)
-            chosen_segment_mask=self.get_chosen_segment_mask(tensor_lab, selected_tumor)
+            if self.mode == 'train':
+                tumor_volumes_in_crop,tumor_diameters=self.estimate_tumor_volume(idx,tumor_segment_crop=selected_tumor)
+                chosen_segment_mask=self.get_chosen_segment_mask(tensor_lab, selected_tumor)
+            else:
+                # validation/test : pas de crop-sur-tumeur -> pas de selected_tumor ; ces
+                # quantites (report-loss) sont ignorees par le retour test -> defaults.
+                tumor_volumes_in_crop=[0,0,0,0,0,0,0,0,0,0]
+                tumor_diameters=torch.zeros((10,3)).float()
+                chosen_segment_mask = torch.zeros(tensor_lab.shape).type_as(tensor_lab)
         else:
             unk_channels_tensor = torch.zeros(tensor_lab.shape).type_as(tensor_lab)
             unk_channels = {}
@@ -520,7 +527,7 @@ class ICHReportsDataset(Dataset):
             tumor_diameters=torch.zeros((10,3)).float()
             chosen_segment_mask = torch.zeros(tensor_lab.shape).type_as(tensor_lab)#it is important to define this as 0--or it will cause loss problems!
 
-        dta={'tumor_in_crop':selected_tumor,
+        dta={'tumor_in_crop':(selected_tumor if self.mode=='train' else None),
              'unknown_per_voxel':unk_channels}
         
 

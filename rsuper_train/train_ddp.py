@@ -215,6 +215,19 @@ def train_net(net, trainset, testset, args, ema_net=None, fold_idx=0):
 
 
 
+def _to_float32(x):
+    """Repasse recursivement les sorties du modele (dict/list/tensor) en fp32 : le forward
+    tourne en bf16 (autocast) mais les losses custom (ball/volume) doivent etre en fp32
+    (sinon HANG / kernels bf16 pathologiques)."""
+    if torch.is_tensor(x):
+        return x.float()
+    if isinstance(x, dict):
+        return {k: _to_float32(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return type(x)(_to_float32(v) for v in x)
+    return x
+
+
 def train_epoch(trainLoader, net, ema_net, optimizer, epoch, writer, scaler, args, matcher=None):
     gc.collect()
     elapsed_time_meter = AverageMeter("Elapsed Time", ":6.2f")
@@ -322,15 +335,19 @@ def train_epoch(trainLoader, net, ema_net, optimizer, epoch, writer, scaler, arg
             # (contrairement au fp16 bloque plus haut) ; PAS de GradScaler necessaire en bf16.
             with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=args.bf16):
                 result = net(img)
-                loss_all=lf.calculate_loss(model_output=result, label=label, unk_voxels=unk_voxels, args=args,
-                                    matcher=matcher,chosen_segment_mask=chosen_segment_mask,tumor_volumes_report=tumor_volumes_in_crop,
-                                    tumor_diameters=tumor_diameters,
-                                    classes=trainLoader.dataset.classes,input_tensor=img,
-                                    class_weights=class_weights if 'class_weights' in locals() else None,
-                                    model_genesis=args.model_genesis_pretrain,
-                                    clip_only = args.clip_pretrain, report_embeddings=report_embeddings, dist=dist,
-                                    ) # pass class_weights if available, otherwise None
-                loss=loss_all['overall']
+            # losses custom (ball/volume) en FP32 : sous autocast bf16 elles peuvent HANG /
+            # etre tres lentes (kernels distance/sphere) -> on n'autocaste QUE le forward.
+            if args.bf16:
+                result = _to_float32(result)   # forward bf16 -> sorties fp32 pour les losses
+            loss_all=lf.calculate_loss(model_output=result, label=label, unk_voxels=unk_voxels, args=args,
+                                matcher=matcher,chosen_segment_mask=chosen_segment_mask,tumor_volumes_report=tumor_volumes_in_crop,
+                                tumor_diameters=tumor_diameters,
+                                classes=trainLoader.dataset.classes,input_tensor=img,
+                                class_weights=class_weights if 'class_weights' in locals() else None,
+                                model_genesis=args.model_genesis_pretrain,
+                                clip_only = args.clip_pretrain, report_embeddings=report_embeddings, dist=dist,
+                                ) # pass class_weights if available, otherwise None
+            loss=loss_all['overall']
             loss.backward()
             
             # Clip gradients before stepping the optimizer.
