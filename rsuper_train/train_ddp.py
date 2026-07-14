@@ -304,7 +304,10 @@ def train_epoch(trainLoader, net, ema_net, optimizer, epoch, writer, scaler, arg
         step = i + epoch * len(trainLoader) # global steps
         
         optimizer.zero_grad()
-        assert not torch.isnan(img).any(), 'Input is nan'
+        # NaN/inf parfois introduits par l'augmentation (ex: gamma x^g sur des valeurs z-scorees
+        # negatives) sur de rares crops -> on sanitise au lieu de crasher tout le training.
+        if not torch.isfinite(img).all():
+            img = torch.nan_to_num(img, nan=0.0, posinf=0.0, neginf=0.0)
         assert torch.max(img)<=100, f'Input is bigger than 100: {torch.max(img)}'
         assert torch.min(img)>=-100, f'Input is smaller than -100: {torch.min(img)}'
 
