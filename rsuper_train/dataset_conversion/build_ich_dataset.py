@@ -64,7 +64,12 @@ def parse_args():
                    help="Dossier des masques d'organes TotalSegmentator. Sert UNIQUEMENT a "
                         "detecter les cas 'rapports' a exclure (dossiers segmented_organs_<ID>.nii.gz).")
     p.add_argument("--ich_label", type=int, default=1,
-                   help="Valeur encodant l'ICH dans les masques d'origine.")
+                   help="Valeur encodant l'ICH dans les masques d'origine (utilise si --lesion_labels absent).")
+    p.add_argument("--lesion_labels", default=None,
+                   help="Mapping 'label:nom' des canaux lesion a extraire, separes par des virgules, "
+                        "dans l'ordre. Ex pour ICH+IVH+PHE : '1:ich_lesion,2:ivh_lesion,3:phe_lesion'. "
+                        "Defaut (None) = '<--ich_label>:ich_lesion' (retro-compatible, ICH seul). "
+                        "Le 1er canal est le canal 'primaire' reporte dans le manifest.")
     p.add_argument("--with_structures", action="store_true",
                    help="STAGE 2 : ajouter aussi les 12 structures (symlink depuis "
                         "--organ_masks_dir) dans segmentations/ -> dataset ATLAS 13 classes. "
@@ -88,6 +93,18 @@ def parse_args():
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
+def parse_lesion_labels(spec, ich_label):
+    """'1:ich_lesion,2:ivh_lesion' -> [(1,'ich_lesion'),(2,'ivh_lesion')].
+    None/'' -> [(ich_label,'ich_lesion')] (retro-compatible)."""
+    if not spec:
+        return [(ich_label, "ich_lesion")]
+    out = []
+    for tok in spec.split(","):
+        lab, name = tok.split(":")
+        out.append((int(lab.strip()), name.strip()))
+    return out
+
+
 def case_id_from_file(path):
     """ID = nom de fichier sans l'extension .nii.gz."""
     name = os.path.basename(path)
@@ -157,15 +174,16 @@ def link_structures(cid, seg_dir, organ_masks_dir, prefix):
 
 
 def process_case(task):
-    (cid, ct_src, mask_src, out_dir, ich_label, copy_ct, overwrite, dry_run,
+    (cid, ct_src, mask_src, out_dir, lesion_map, copy_ct, overwrite, dry_run,
      with_structures, organ_masks_dir, totalseg_prefix) = task
+    prim_label, prim_name = lesion_map[0]   # canal primaire (manifest)
     res = {"id": cid, "status": "ok", "detail": "",
            "ich_voxels": 0, "ich_volume_mm3": 0.0, "shape": "", "spacing": ""}
     try:
         case_dir = os.path.join(out_dir, cid)
         seg_dir = os.path.join(case_dir, "segmentations")
         ct_dst = os.path.join(case_dir, "ct.nii.gz")
-        ich_dst = os.path.join(seg_dir, "ich_lesion.nii.gz")
+        ich_dst = os.path.join(seg_dir, prim_name + ".nii.gz")
 
         # Idempotence : si la lesion existe deja et qu'on ne reecrit pas, on ne
         # la recalcule pas, mais on relit le fichier produit pour remplir le
@@ -206,7 +224,7 @@ def process_case(task):
             res["detail"] = "affine_diff(<=tol relachee)"
 
         mask_data = np.asarray(mask_img.dataobj)
-        ich = (mask_data == ich_label).astype(np.uint8)
+        ich = (mask_data == prim_label).astype(np.uint8)   # primaire (pour le manifest)
 
         zooms = tuple(float(z) for z in mask_img.header.get_zooms()[:3])
         n_ich = int(ich.sum())
@@ -234,11 +252,14 @@ def process_case(task):
             else:
                 os.symlink(os.path.realpath(ct_src), ct_dst)
 
-        # Masque ICH : on reutilise affine + header du masque d'origine (alignement exact),
-        # en forcant le dtype uint8.
+        # Masques lesion : un canal binaire par (label -> nom) de lesion_map.
+        # On reutilise affine + header du masque d'origine (alignement exact), dtype uint8.
         hdr = mask_img.header.copy()
         hdr.set_data_dtype(np.uint8)
-        nib.save(nib.Nifti1Image(ich, mask_img.affine, hdr), ich_dst)
+        for label, name in lesion_map:
+            arr = (mask_data == label).astype(np.uint8)
+            nib.save(nib.Nifti1Image(arr, mask_img.affine, hdr),
+                     os.path.join(seg_dir, name + ".nii.gz"))
 
         # STAGE 2 : ajouter les 12 structures (symlink) -> dataset ATLAS 13 classes.
         if with_structures:
@@ -258,6 +279,8 @@ def process_case(task):
 # --------------------------------------------------------------------------- #
 def main():
     args = parse_args()
+    lesion_map = parse_lesion_labels(args.lesion_labels, args.ich_label)
+    print("Canaux lesion a extraire : " + ", ".join(f"{lab}->{nm}" for lab, nm in lesion_map))
 
     vols_ids = list_ids(args.vols_dir)
     mask_ids = list_ids(args.masks_dir)
@@ -293,7 +316,7 @@ def main():
     for cid in final_ids:
         ct_src = os.path.join(args.vols_dir, cid + ".nii.gz")
         mask_src = os.path.join(args.masks_dir, cid + ".nii.gz")
-        tasks.append((cid, ct_src, mask_src, args.out_dir, args.ich_label,
+        tasks.append((cid, ct_src, mask_src, args.out_dir, lesion_map,
                       args.copy_ct, args.overwrite, args.dry_run,
                       args.with_structures, args.organ_masks_dir, args.totalseg_prefix))
 
@@ -339,24 +362,28 @@ def main():
                 w.writerow(r)
         print(f"\nManifest -> {manifest}")
 
+        lesion_names = [nm for _, nm in lesion_map]
         if args.with_structures:
-            # STAGE 2 : 13 classes = 12 structures + ich_lesion (triees, cf. label_names_ich_full.yaml)
-            classes = sorted(STRUCTURES + ["ich_lesion"])
+            # STAGE 2 : 12 structures + N lesions (triees, cf. label_names_ich_full.yaml)
+            classes = sorted(STRUCTURES + lesion_names)
             yaml_path = os.path.join(args.out_dir, "label_names_ich_full.yaml")
             with open(yaml_path, "w") as fh:
                 for c in classes:
                     fh.write(f"- {c}\n")
-            print(f"Classes  -> {yaml_path}  (stage 2 : {len(classes)} classes)")
+            print(f"Classes  -> {yaml_path}  (stage 2 : {len(classes)} classes, "
+                  f"dont {len(lesion_names)} lesions : {lesion_names})")
             # recap structures manquantes
             miss_cases = sum(1 for r in results if "struct_missing" in r.get("detail", ""))
             if miss_cases:
                 print(f"  ATTENTION : {miss_cases} cas avec >=1 structure manquante "
                       f"(voir colonne 'detail' du manifest).")
         else:
+            classes = sorted(lesion_names)
             yaml_path = os.path.join(args.out_dir, "label_names_ich.yaml")
             with open(yaml_path, "w") as fh:
-                fh.write("- ich_lesion\n")
-            print(f"Classes  -> {yaml_path}  (stage 1 : 1 classe = ich_lesion)")
+                for c in classes:
+                    fh.write(f"- {c}\n")
+            print(f"Classes  -> {yaml_path}  (stage 1 : {len(classes)} lesion(s) = {classes})")
 
 
 if __name__ == "__main__":
