@@ -104,7 +104,9 @@ def estimate_volume_ml(diams_cm, third_axis="equal_B"):
         A, B, C = diams_cm[0], diams_cm[1], diams_cm[2]
     elif len(diams_cm) == 2:
         A, B = diams_cm[0], diams_cm[1]
-        C = {"equal_B": B, "min": B, "mean": (A + B) / 2.0}.get(third_axis, B)
+        # equal_A : C=A (grand axe). Valide data-driven : C_reel cranio-caudal ~ A (pas B)
+        # -> debiaise l'ABC/2 (ratio est/reel 0.69->1.05). Voir analyse taille.
+        C = {"equal_B": B, "min": B, "mean": (A + B) / 2.0, "equal_A": A}.get(third_axis, B)
     else:  # 1 diametre
         A = B = C = diams_cm[0]
     vol_ml = A * B * C / 2.0                     # ABC/2 (cm^3 = mL)
@@ -124,8 +126,9 @@ def main():
     ap.add_argument("--input", default="/home/pauldcrm/links/scratch/R-SuperCerv/report_extraction/format/prompt5/results_Qwen2.5-72B-Instruct-AWQ_prompt5_formated.csv")
     ap.add_argument("--out_dir", default="/home/pauldcrm/links/scratch/R-SuperCerv/report_extraction/metadata")
     ap.add_argument("--types", nargs="+", default=["ICH"], help="Types de lesion a exporter.")
-    ap.add_argument("--third_axis", default="equal_B", choices=["equal_B", "mean", "min"],
-                    help="Estimation du 3e diametre quand seuls 2 sont donnes.")
+    ap.add_argument("--third_axis", default="equal_B", choices=["equal_B", "mean", "min", "equal_A"],
+                    help="Estimation du 3e diametre quand seuls 2 sont donnes. equal_A (C=A) = "
+                         "debiaise (valide data-driven, C_reel~A).")
     a = ap.parse_args()
     os.makedirs(a.out_dir, exist_ok=True)
 

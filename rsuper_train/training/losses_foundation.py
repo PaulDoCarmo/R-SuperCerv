@@ -15,6 +15,7 @@ import nibabel as nib
 import math
 import importlib
 from . import info_nce as nce
+from .size_loss import size_constraint   # contrainte de taille simple (Kervadec, sans H)
 import random
 from functools import reduce
 import copy
@@ -354,6 +355,26 @@ def volume_loss_basic(out,chosen_segment_mask,tumor_volumes,
     #print('Using dice volume loss')
     assert not torch.isnan(loss['dice_volume_loss']).any(), 'loss is nan'
     return loss
+
+
+def size_report_loss(out, chosen_segment_mask, tumor_volumes, classes,
+                     tolerance=0.4, normalize=True):
+    """Contrainte de taille (Kervadec Eq.2, sans H, bande = tolerance) pour la branche
+    RAPPORT, version 'PAS DE REGION' : V_S = somme des probas sur TOUT le crop, pour le
+    canal-lesion dont le rapport donne un volume. `chosen_segment_mask` ne sert qu'a
+    ROUTER le volume vers le bon canal (gate), pas a restreindre la region.
+    Ne supervise que les canaux avec un volume rapporte (target>0). {'size_loss': scalaire}.
+    """
+    out = get_lesion_channels(out, classes)                                     # (B, L, H, W, D)
+    csm = get_lesion_channels(chosen_segment_mask, classes, assertion=False)
+    v_s = torch.sigmoid(out).sum(dim=(-1, -2, -3))                              # (B, L) volume predit, tout le crop
+    report_volume = tumor_volumes.sum(-1, keepdim=True)                         # (B, 1) volume rapporte (voxels)
+    gate = (csm.sum(dim=(-1, -2, -3)) > 0).float()                             # (B, L) 1 sur le canal cible
+    target = report_volume * gate                                              # (B, L)
+    valid = (target > 0).float()
+    c = size_constraint(v_s, target, tolerance=tolerance, normalize=normalize)  # (B, L)
+    c = c * valid
+    return {'size_loss': c.sum() / valid.sum().clamp(min=1.0)}
 
 
 def dice_based_volume_loss(x,y,tolerance=0.1,E=500,cross_entropy=False):
@@ -927,7 +948,15 @@ def calculate_loss(model_output, label, unk_voxels, args, matcher,chosen_segment
             #assert no nan in output
             assert not torch.isnan(r).any(), 'Output is nan'
             if args.report_volume_loss_basic > 0:
-                if ('ball' in args.loss or 'dynamic' in args.loss or 'dll' in args.loss) and not (j!=0 and 'last' in args.loss):
+                if 'size' in args.loss:
+                    # contrainte de taille simple (Kervadec, sans H, PAS DE REGION), tete finale only
+                    if not (j != 0 and 'last' in args.loss):
+                        loss_r = size_report_loss(r, chosen_segment_mask, tumor_volumes_report, classes,
+                                                  tolerance=args.volume_loss_tolerance, normalize=True)
+                    else:
+                        # tetes aux : meme structure (dict) pour un assemblage coherent
+                        loss_r = {'size_loss': torch.tensor(0.).type_as(r)}
+                elif ('ball' in args.loss or 'dynamic' in args.loss or 'dll' in args.loss) and not (j!=0 and 'last' in args.loss):
                     #j!=0 and 'last' in args.loss=>applies the ball loss only to the last layer
                     #print('Using the ball loss')
                     loss_r = ball_loss (out=r, labels=l, unk_voxels=unk_voxels, chosen_segment_mask=chosen_segment_mask, 
@@ -949,8 +978,22 @@ def calculate_loss(model_output, label, unk_voxels, args, matcher,chosen_segment
                 loss_r = torch.tensor(0).type_as(r)
 
 
+            # 'size' mode PAS DE REGION : ne pas laisser la BCE-fond (basee sur la structure
+            # citee, containment ~9%) supprimer la vraie lesion hors-structure. On desactive
+            # donc BCE+Dice sur les canaux-lesion des items RAPPORT (chosen_segment_mask present).
+            # La size-loss est alors la SEULE supervision ICH cote rapport.
+            # NB : on CLONE (pas d'in-place) pour ne pas casser l'autograd entre les tetes.
+            kv = known_voxels
+            if 'size' in args.loss:
+                rep = torch.where(chosen_segment_mask.sum(dim=(1, 2, 3, 4)) > 0)[0]
+                if len(rep) > 0:
+                    lesion_idx = [i for i, c in enumerate(classes) if 'lesion' in c.lower()]
+                    kv = known_voxels.clone()
+                    for bi in rep:
+                        kv[bi, lesion_idx] = 0
+
             loss_seg = F.binary_cross_entropy_with_logits(r, l.float(), reduction='none', weight=class_weights)
-            
+
             assert loss_seg.shape == known_voxels.shape, f'Loss shape {loss_seg.shape} does not match known voxels shape {known_voxels.shape}'
             if SANITY_CHECKS and counter2<5 and j==0:
                 label_names = classes
@@ -959,8 +1002,8 @@ def calculate_loss(model_output, label, unk_voxels, args, matcher,chosen_segment
                 debug_save_labels(loss_seg,str(counter2),out_dir=os.path.join(DEBUG_OUTPUT_ROOT, 'SanityLossBCE'),label_names=label_names)
                 debug_save_labels(loss_seg*known_voxels,str(counter2),out_dir=os.path.join(DEBUG_OUTPUT_ROOT, 'SanityLossBCEAfterKnownVoxels'),label_names=label_names)
                 counter2+=1
-            loss_seg = loss_seg * known_voxels
-            loss_seg = loss_seg.mean() + DiceLossMultiClass(r, l, known_voxels, sigmoid=True,class_weights=class_weights)
+            loss_seg = loss_seg * kv
+            loss_seg = loss_seg.mean() + DiceLossMultiClass(r, l, kv, sigmoid=True,class_weights=class_weights)
             loss_segmentation = loss_segmentation + args.aux_weight[j] * args.seg_loss * loss_seg
 
             if not isinstance(loss_r, dict):
