@@ -480,6 +480,7 @@ def get_parser():
     parser.add_argument('--iter_per_epoch_override', type=int, default=None, help='Override iter_per_epoch from config (smoke tests / short runs).')
     parser.add_argument('--rotate_override', type=int, default=None, help='Override l angle de rotation (augmentation) : applique [v,v,v].')
     parser.add_argument('--training_size_override', type=int, nargs=3, default=None, help='Override la taille de patch D H W (et window_size).')
+    parser.add_argument('--val_freq', type=int, default=None, help='Override val_freq du config. Ex: 999 = ne jamais valider (pas de best.pth ; utile petits pools ou la val est bruitee -> on garde fold_0_latest.pth = derniere epoch).')
 
 
 
@@ -509,6 +510,11 @@ def get_parser():
     for key, value in config.items():
         if not hasattr(args, key):
             setattr(args, key, value)
+
+    # val_freq : override CLI (ex 999 pour ne jamais valider -> pas de best.pth bruite sur
+    # les petits pools X5/X10, on garde fold_0_latest.pth) ; sinon valeur du config.
+    if getattr(args, 'val_freq', None) is None:
+        args.val_freq = config['val_freq']
 
     if args.multi_ch_tumor:
         #overwrites the arguments in config file

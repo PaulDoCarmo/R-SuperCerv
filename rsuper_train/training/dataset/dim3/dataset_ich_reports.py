@@ -293,6 +293,10 @@ class ICHReportsDataset(Dataset):
             classes_UFO = sorted(classes_UFO)
             
         for c in classes_UFO:
+            # Exception : 'ich_lesion' est autorise pour l'experience d'ANCRE (pseudo-masque
+            # ICH par intensite fourni comme label per-voxel = terme H de Kervadec).
+            if c.lower() == 'ich_lesion':
+                continue
             if 'lesion' in c.lower() or ' tumor' in c.lower() or ' mass' in c.lower() or 'cyst' in c.lower() or 'pdac' in c.lower() or 'pnet' in c.lower():
                 raise ValueError('UFO classes should not contain tumor or lesion classe. our assumption is that the UFO data does not have lesions annotated per voxel. Classes found:', classes_UFO)
 
@@ -801,10 +805,14 @@ class ICHReportsDataset(Dataset):
     def get_chosen_segment_mask(self, tensor_lab, tumor_segment):
         if tumor_segment == 'random':
             return torch.zeros_like(tensor_lab).type_as(tensor_lab)
-        
+        # 'ich_pseudo' (cas ancre) : la region EST le pseudo-masque (canal ich_lesion), pas une structure.
+        if tumor_segment == 'ich_pseudo':
+            tumor_segment = 'ich_lesion'
         print('Chosen segment:', tumor_segment, flush=True, file=sys.stderr)
         segment_mask = self.get_random_tumor_seg_mask(tensor_lab, tumor_segment,classes=self.classes).squeeze(0)
-        assert segment_mask.sum().item()!=0.0, f'problem in case {self.current_sample}, segment_mask is empty, crop is in {tumor_segment}'
+        if segment_mask.sum().item()==0.0:
+            # tumeur sortie du crop (rare, ex rotation) -> item traite en fond (exclu de la size-loss).
+            return torch.zeros_like(tensor_lab).type_as(tensor_lab)
         #apply it to the lesion classes
         segment_mask_lesion_ch = []
         # ICH : la region (union des structures citees par le rapport) va dans le canal
@@ -839,6 +847,23 @@ class ICHReportsDataset(Dataset):
             #print('This is an image with tumor annotations from reports:'+self.img_list[idx], flush=True, file=sys.stderr)
             #data without per-voxel tumor annotations, just reports mentioning tumors
             segments,tumor_dict=self.get_tumor_segment_labels(idx)
+
+            # === CAS ANCRE : pseudo-masque ICH present -> pipeline 100% PSEUDO-MASQUE.
+            # Centrage + volume (Vr) + chosen_segment_mask + unk sont bases sur le pseudo-masque,
+            # PLUS sur la 'Standardized Location' (obsolete : containment ICH ~9%). La structure ne
+            # sert plus que de fallback pour les cas SANS pseudo (gate/no-blob) traites plus bas.
+            _ich = [i for i, c in enumerate(self.classes_UFO) if 'ich_lesion' in c.lower()]
+            if _ich and float(tensor_lab[:, _ich].sum()) > 0:
+                if np.random.random() < 0.1:
+                    # 10% crop aleatoire (negatifs / diversite) -> pas de structure non plus
+                    tensor_img, tensor_lab = self.random_crop_on_tumor(tensor_img, tensor_lab, d, h, w, tumor_case=False, ufo=True)
+                    return tensor_img, tensor_lab, tumor_dict, 'random'
+                pseudo_fg = (tensor_lab[:, _ich].sum(1) > 0).float()          # (1,D,H,W)
+                out = augmentation.crop_foreground_3d(tensor_ct=tensor_img, tensor_lab=tensor_lab,
+                                                      foreground=pseudo_fg, crop_size=[d, h, w])
+                if isinstance(out, tuple):
+                    return out[0], out[1], tumor_dict, 'ich_pseudo'
+                # pseudo trop grand pour le crop (rare) -> fallback structure ci-dessous
 
             if len(segments['subseg_with_only_known_sizes'])>0:
                 segment_options=segments['subseg_with_only_known_sizes']
@@ -885,6 +910,8 @@ class ICHReportsDataset(Dataset):
                             print('Random crop because of empty mask', flush=True, file=sys.stderr)
                             return tensor_img, tensor_lab, tumor_dict, 'random'
 
+                # Fallback structure (cas SANS pseudo-masque : gate/no-blob). Les cas ancres sont
+                # deja partis via le chemin 'ich_pseudo' plus haut.
                 out = augmentation.crop_foreground_3d(tensor_ct=tensor_img, tensor_lab=tensor_lab, foreground=tumor_segment_mask,
                                                       crop_size=[d, h, w])
                 if isinstance(out, tuple):
@@ -1164,10 +1191,15 @@ class ICHReportsDataset(Dataset):
 
         # masque des voxels "structure-lesion presente DANS LE CROP" (localisation per-voxel
         # inconnue -> la volume/ball loss s'en charge, la BCE doit les ignorer).
+        # On inclut le canal PSEUDO-MASQUE ICH (ich_lesion) : le crop est CENTRE dessus donc il
+        # est present. Sans ca, si la structure rapportee sort du crop pseudo-centre,
+        # unk_lesion_region est vide -> unk_voxels==0 alors que chosen_segment_mask>0 (repli
+        # pseudo dans get_chosen_segment_mask) -> crash assertion (losses_foundation l.894).
+        region_idx = set(clss_UFO_to_idx[r] for r in tumor_regions)
+        region_idx.update(i for i, c in enumerate(self.classes_UFO) if 'ich_lesion' in c.lower())
         unk_lesion_region = torch.zeros(tensor_lab[0].shape).type_as(tensor_lab[0])
         lesion_in_crop = False
-        for r in tumor_regions:
-            r_idx = clss_UFO_to_idx[r]
+        for r_idx in region_idx:
             if tensor_lab[r_idx].max() > 0:
                 unk_lesion_region[tensor_lab[r_idx] > 0] = 1
                 lesion_in_crop = True
@@ -1252,6 +1284,23 @@ class ICHReportsDataset(Dataset):
         _, tumor_dict = self.get_tumor_segment_labels(idx)
         if tumor_segment_crop is None or tumor_segment_crop == 'random':
             return [0]*10, torch.zeros((10, 3)).float()  # crop pas centre sur une region-lesion
+
+        if tumor_segment_crop == 'ich_pseudo':
+            # cas ANCRE : crop centre sur le pseudo-masque (lesion entiere dans le patch) -> cible
+            # volume = TOTAL rapporte du cas (Vr = somme des volume_mm3), sans filtrage par structure.
+            volumes, diameters = [], []
+            for _, row in tumor_dict.iterrows():
+                if str(row.get('Unknow Tumor Size', 'yes')).strip().lower() != 'no':
+                    continue
+                vol = row.get('volume_mm3', np.nan)
+                if pd.isna(vol):
+                    continue
+                volumes.append(float(vol))
+                d = [row.get('diameter_mm_1', np.nan), row.get('diameter_mm_2', np.nan), row.get('diameter_mm_3', np.nan)]
+                diameters.append([float(x) if not pd.isna(x) else 0.0 for x in d])
+            for _ in range(len(volumes), 10):
+                volumes.append(0); diameters.append([0, 0, 0])
+            return volumes, torch.tensor(diameters).float()
 
         if isinstance(tumor_segment_crop, str):
             tumor_segment_crop = [tumor_segment_crop]

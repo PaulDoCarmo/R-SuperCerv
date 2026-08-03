@@ -13,6 +13,15 @@ cd "$REPO"
 PORT=29610
 log(){ echo "[$(date '+%m-%d %H:%M')] $*" | tee -a "$MASTER"; }
 
+# --- s'assurer que les subsets emboites S_5/S_10 existent (deterministe, seed=0) ---
+if [ ! -d "$D/subsets3/S_5" ] || [ ! -d "$D/subsets3/S_10" ]; then
+  log "creation subsets S_5/S_10 (emboites dans S_25, seed=0)"
+  python dataset_conversion/make_mask_subsets.py \
+    --trainval_dir "$D/dataset_ich3_full_npz_trainval" \
+    --manifest "$D/dataset_ich_full/manifest_ich.csv" \
+    --out_root "$D/subsets3" --sizes 5 10 25 50 100 --seed 0 >> "$MASTER" 2>&1
+fi
+
 train_stage1(){ # <name> <data_root>
   local name="$1" dr="$2"
   local logf="$LOGD/${name}.log"
@@ -30,7 +39,28 @@ train_stage1(){ # <name> <data_root>
   fi
 }
 
+# Petits pools : val bruitee (~1 masque) -> pas de best.pth. On garde fold_0_latest.pth (epoch 60).
+train_stage1_last(){ # <name> <data_root>
+  local name="$1" dr="$2"
+  local logf="$LOGD/${name}.log"
+  if [ -f "$D/exp/ich/${name}/fold_0_latest.pth" ]; then log "SKIP $name (latest.pth deja la)"; return; fi
+  [ -d "$dr" ] || { log "NO-DATA $dr"; return; }
+  log "START $name  (data=$dr, VAL OFF -> latest.pth) -> ${name}.log"
+  if python train_ddp.py --dataset ich --model medformer --dimension 3d \
+      --data_root "$dr" --classes_number 15 --save_destination "$D/ich3_augmented" \
+      --cp_path "$D/exp/" --log_path "$D/log/" --unique_name "$name" \
+      --crop_on_tumor --report_volume_loss_basic 0 --bf16 --gpu '0' --workers 8 --batch_size 3 \
+      --epochs 60 --iter_per_epoch_override 250 --val_freq 999 --dist_url "tcp://127.0.0.1:$((PORT++))" \
+      > "$logf" 2>&1; then
+    log "OK    $name"
+  else
+    log "FAIL  $name (voir $logf)"
+  fi
+}
+
 log "===== SWEEP15 stage-1 (from scratch, 15 classes) ====="
+train_stage1_last ich3_stage1_X5  "$D/subsets3/S_5"    # nouveau : petit pool, latest.pth
+train_stage1_last ich3_stage1_X10 "$D/subsets3/S_10"   # nouveau : petit pool, latest.pth
 train_stage1 ich3_stage1_X25  "$D/subsets3/S_25"
 train_stage1 ich3_stage1_X50  "$D/subsets3/S_50"
 train_stage1 ich3_stage1_X100 "$D/subsets3/S_100"

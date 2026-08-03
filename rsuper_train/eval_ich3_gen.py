@@ -59,16 +59,27 @@ def eval_model(name, ckpt):
     return rows
 
 def main():
-    models = {"X25": "ich3_stage1_X25", "X50": "ich3_stage1_X50",
-              "X100": "ich3_stage1_X100", "X305": "ich3_stage1_X305"}
+    # (nom_dossier, checkpoint) : X5/X10 = petits pools sans best.pth -> latest.pth (epoch 60).
+    models = {"X5": ("ich3_stage1_X5", "fold_0_latest.pth"),
+              "X10": ("ich3_stage1_X10", "fold_0_latest.pth"),
+              "X25": ("ich3_stage1_X25", "fold_0_best.pth"),
+              "X50": ("ich3_stage1_X50", "fold_0_best.pth"),
+              "X100": ("ich3_stage1_X100", "fold_0_best.pth"),
+              "X305": ("ich3_stage1_X305", "fold_0_best.pth")}
+    csv_path = f"{D}/eval/ich3_generalization.csv"
+    existing = pd.read_csv(csv_path) if os.path.exists(csv_path) else pd.DataFrame()
+    done = set(existing["model"].unique()) if len(existing) else set()
     allrows = []
-    for tag, nm in models.items():
-        ck = f"{D}/exp/ich/{nm}/fold_0_best.pth"
+    for tag, (nm, ckname) in models.items():
+        if tag in done:
+            print(f"[skip] {tag}: deja dans le CSV"); continue
+        ck = f"{D}/exp/ich/{nm}/{ckname}"
         if not os.path.exists(ck):
             print(f"[skip] {tag}: pas de checkpoint ({ck})"); continue
-        print(f"=== eval {tag} ===", flush=True)
+        print(f"=== eval {tag} ({ckname}) ===", flush=True)
         allrows += eval_model(tag, ck)
-    df = pd.DataFrame(allrows); df.to_csv(f"{D}/eval/ich3_generalization.csv", index=False)
+    df = pd.concat([existing, pd.DataFrame(allrows)], ignore_index=True)
+    df.to_csv(csv_path, index=False)
     print("\n===== DICE MEDIAN par modele x domaine x classe =====")
     piv = df.pivot_table(index=["model", "cls"], columns="domain", values="dice", aggfunc="median")
     print(piv.round(3).to_string())

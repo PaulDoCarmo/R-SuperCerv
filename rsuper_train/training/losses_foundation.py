@@ -988,9 +988,36 @@ def calculate_loss(model_output, label, unk_voxels, args, matcher,chosen_segment
                 rep = torch.where(chosen_segment_mask.sum(dim=(1, 2, 3, 4)) > 0)[0]
                 if len(rep) > 0:
                     lesion_idx = [i for i, c in enumerate(classes) if 'lesion' in c.lower()]
+                    ich_idx = [i for i, c in enumerate(classes) if 'ich' in c.lower()]
+                    other_idx = [i for i in lesion_idx if i not in ich_idx]
                     kv = known_voxels.clone()
-                    for bi in rep:
-                        kv[bi, lesion_idx] = 0
+                    if 'anchor' in args.loss:
+                        # Ancre haute-precision (etude data-driven 65 GT CHUM) : BCE UNIQUEMENT
+                        # sur voxels SURS.
+                        #   sur-positif = pseudo ERODE 4mm (kernel 9) -> precision ~1.0 vs GT
+                        #     (a 3mm : 79% cas prec=1.0 ; a 4mm : 92%). L'erosion nettoie la fuite
+                        #     de bordure ET vide les mauvaises composantes compactes-minuscules.
+                        #   sur-negatif = au-dela du pseudo DILATE 6mm (kernel 13) : marge LARGE
+                        #     car le pseudo SOUS-capture (~0.58 Vr) -> evite de pousser a 0 la vraie
+                        #     frontiere ICH. Anneau [erode4mm, dilate6mm] = incertain -> pas de BCE.
+                        #   pseudo VIDE (cas jete par le gate ratio) -> AUCUNE BCE-ancre : la
+                        #     size-loss reste seule (sinon on superviserait tout l'ICH a 0).
+                        K_ERO, K_DIL = 9, 13
+                        for bi in rep:
+                            for ci in ich_idx:
+                                pm = l[bi:bi + 1, ci:ci + 1].float()          # (1,1,H,W,D) = pseudo-masque
+                                if pm.sum() < 1:                              # gate/vide -> pas d'ancre
+                                    kv[bi, ci] = 0
+                                    continue
+                                dil = dilate_volume(pm, K_DIL)                # marge sur-negatif (6mm)
+                                ero = 1.0 - dilate_volume(1.0 - pm, K_ERO)    # coeur sur-positif (erode 4mm)
+                                uncertain = (dil * (1.0 - ero))[0, 0]         # anneau-frontiere incertain
+                                kv[bi, ci] = 1.0 - uncertain                  # sur = coeur U loin
+                            kv[bi, other_idx] = 0                             # IVH/PHE : pas de BCE (non supervises)
+                    else:
+                        # sans ancre : on desactive toute BCE-lesion sur les items-rapport
+                        for bi in rep:
+                            kv[bi, lesion_idx] = 0
 
             loss_seg = F.binary_cross_entropy_with_logits(r, l.float(), reduction='none', weight=class_weights)
 

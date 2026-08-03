@@ -15,6 +15,8 @@ cd "$REPO"
 PORT=29680
 LAMBDAS="${LAMBDAS:-0.1 0.5 1.0}"        # sweep lambda (report_volume_loss_basic). Override: LAMBDAS="0.5" bash ...
 TOL="${TOL:-0.4}"                        # tolerance data-driven
+# Metadonnees rapports : configurable (defaut prompt5 ; prompt6 via REPORTS_META=...metadata_prompt6/...)
+REPORTS_META="${REPORTS_META:-$D/report_extraction/metadata/ich_per_tumor_metadata.csv}"
 PRE="$D/exp/ich/ich3_stage1_X25/fold_0_best.pth"    # stage-1 15-cls, X25
 MASKS="$D/subsets3/S_25"                 # 25 masques (branche pleinement supervisee)
 log(){ echo "[$(date '+%m-%d %H:%M')] $*" | tee -a "$MASTER"; }
@@ -28,7 +30,7 @@ train(){ # <name> <ucsf_ids> <lambda>
   log "START $name (ids=$(basename "$ids") lambda=$lam tol=$TOL)"
   if python train_ddp.py --dataset ich_ufo --model medformer --dimension 3d \
       --data_root "$MASKS" --UFO_root "$D/dataset_ich_reports_npz" \
-      --reports "$D/report_extraction/metadata/ich_per_tumor_metadata.csv" --ucsf_ids "$ids" \
+      --reports "$REPORTS_META" --ucsf_ids "$ids" \
       --classes_number 15 --pretrained "$PRE" --save_destination "$D/ich3_augmented_ufo" \
       --cp_path "$D/exp/" --log_path "$D/log/" --unique_name "$name" \
       --crop_on_tumor --loss size_last --report_volume_loss_basic "$lam" --volume_loss_tolerance "$TOL" \

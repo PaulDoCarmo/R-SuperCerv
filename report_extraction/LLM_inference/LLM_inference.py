@@ -346,6 +346,31 @@ USER_PROMPT_5 = (
     "brain tissue\"). Every category must be accounted for in the justification"
 )
 
+# ---------------------------------------------------------------------------
+# PROMPT 6 = PROMPT 5 + detection de l'IVH INDIRECTE.
+# Motivation (analyse des faux negatifs LLM vs masque, sens IVH 83%) : le prompt 5 ne liste
+# que "deversement/inondation ventriculaire" -> il rate l'IVH decrite indirectement
+# ("sequestration ventriculaire", "extension jusqu'au 3e ventricule", "depots declives",
+# "contact sous-ependymaire"...). On enrichit UNIQUEMENT la ligne IVH de la section A, en
+# gardant tout le reste identique, et en INTERDISANT l'inference depuis la seule hydrocephalie
+# (autres causes) pour preserver la specificite ~100% du signal.
+# ---------------------------------------------------------------------------
+USER_PROMPT_6 = USER_PROMPT_5.replace(
+    "- IVH: Intraventricular hemorrhage (Deversement/Inondation dans les ventricules).\n",
+    "- IVH: Intraventricular hemorrhage. Beyond explicit terms (\"deversement/inondation "
+    "ventriculaire\", \"hemorragie intraventriculaire\"), you MUST ALSO detect IVH from "
+    "INDIRECT descriptions of blood reaching, extending into, trapped in, or lining the "
+    "ventricles: extension \"au/jusqu'au 3e ou 4e ventricule\", \"jusqu'au ventricule\" or "
+    "\"a la corne\"; \"sequestration\" of a ventricle or of a horn (\"sequestration "
+    "ventriculaire / de la corne occipitale\"); \"depots hemorragiques declives\" (dependent "
+    "intraventricular blood); \"contact / deversement sous-ependymaire\"; \"resorption "
+    "transependymaire\". Any of these means IVH = present. "
+    "CAUTION (keep specificity high): do NOT infer IVH from hydrocephalus, ventricular "
+    "compression, or midline shift ALONE (these have other causes); only mark IVH when the "
+    "text actually describes blood in/reaching a ventricle. If the report explicitly negates it "
+    "(e.g. \"sans franc deversement intraventriculaire\"), IVH = absent.\n",
+)
+
 _CLIENT = None
 _MODEL = None
 
@@ -390,6 +415,7 @@ def get_prompt_schema(prompt_id: int) -> Dict[str, object]:
         3: base_fields,
         4: base_fields,
         5: base_fields,
+        6: base_fields,
     }
     key_aliases_by_prompt = {
         1: {
