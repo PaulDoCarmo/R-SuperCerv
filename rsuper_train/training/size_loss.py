@@ -67,6 +67,43 @@ def size_constraint(v_s: torch.Tensor, target_volume: torch.Tensor,
     return c
 
 
+def size_constraint_ab(v_s: torch.Tensor, a: torch.Tensor, b: torch.Tensor,
+                       normalize: bool = True, eps: float = 1.0) -> torch.Tensor:
+    """C(V_S) avec bornes EXPLICITES [a, b] (au lieu de V±tol). Version report-only :
+        C = [max(0, a - V_S)]² (sous a)  +  [max(0, V_S - b)]² (au-dessus b).
+    normalize : chaque terme divisé par (V_S+a)² resp. (V_S+b)² -> borné [0,~1), et le terme
+    HAUT s'annule proprement si b=+inf (floor asymétrique) sans faire disparaître le terme BAS.
+    a, b, v_s : (B, C) en voxels. b peut être très grand (ex. 1e9) pour 'pas de borne haute'."""
+    below = torch.clamp(a - v_s, min=0.0)
+    above = torch.clamp(v_s - b, min=0.0)
+    if normalize:
+        c = below * below / ((v_s + a) * (v_s + a) + eps) + above * above / ((v_s + b) * (v_s + b) + eps)
+    else:
+        c = below * below + above * above
+    return c
+
+
+def volume_size_loss_ab(prob: torch.Tensor, a: torch.Tensor, b: torch.Tensor,
+                        region_mask: torch.Tensor | None = None, lambda_size: float = 1.0,
+                        normalize: bool = True, valid: torch.Tensor | None = None,
+                        reduction: str = "mean") -> torch.Tensor:
+    """Perte de taille à bornes explicites [a,b] : lambda_size * C_ab(V_S). Voir size_constraint_ab.
+    prob (B,C,*spatial) ; a,b (B,C) voxels ; region_mask où compter V_S ; valid (B,C) 0/1."""
+    v_s = predicted_volume(prob, region_mask)
+    c = size_constraint_ab(v_s, a, b, normalize=normalize)
+    loss = lambda_size * c
+    if valid is not None:
+        loss = loss * valid
+        denom = valid.sum().clamp(min=1.0)
+    else:
+        denom = torch.tensor(float(loss.numel()), device=loss.device)
+    if reduction == "mean":
+        return loss.sum() / denom
+    if reduction == "sum":
+        return loss.sum()
+    return loss
+
+
 def volume_size_loss(prob: torch.Tensor, target_volume: torch.Tensor,
                      tolerance: float = 0.4, region_mask: torch.Tensor | None = None,
                      lambda_size: float = 1.0, normalize: bool = False,

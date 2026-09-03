@@ -231,7 +231,10 @@ def _to_float32(x):
 def train_epoch(trainLoader, net, ema_net, optimizer, epoch, writer, scaler, args, matcher=None):
     gc.collect()
     elapsed_time_meter = AverageMeter("Elapsed Time", ":6.2f")
-    
+
+    # rampe linéaire de la loss de présence IVH (0 -> 1 sur ivh_ramp_epochs), lue par calculate_loss
+    args._ivh_ramp = min(1.0, (epoch + 1) / max(getattr(args, 'ivh_ramp_epochs', 10), 1))
+
     net.train()
     start_epoch_time = time.time()  # Track epoch start time
     loss_meters = OrderedDict()
@@ -246,6 +249,10 @@ def train_epoch(trainLoader, net, ema_net, optimizer, epoch, writer, scaler, arg
             tumor_volumes_in_crop = inputs["volumes"].float()
             chosen_segment_mask = inputs["mask"].float()
             tumor_diameters = inputs["diameters"].float()
+            y_ivh = inputs["y_ivh"].float() if "y_ivh" in inputs else None   # flag rapport IVH par scan (loss de présence)
+            ivh_vol = inputs["ivh_vol"].float() if "ivh_vol" in inputs else None  # volume IVH oracle mL (size-loss)
+            ivh_a = inputs["ivh_a"].float() if "ivh_a" in inputs else None        # bornes report-only (size-loss ivhbounds)
+            ivh_b = inputs["ivh_b"].float() if "ivh_b" in inputs else None
             if "weights" in inputs:
                 class_weights = inputs["weights"].float()
             else:
@@ -266,6 +273,10 @@ def train_epoch(trainLoader, net, ema_net, optimizer, epoch, writer, scaler, arg
             if not args.model_genesis_pretrain:
                 label = label.long()
             unk_voxels, tumor_volumes_in_crop, chosen_segment_mask, tumor_diameters = None, None, None, None
+            y_ivh = None
+            ivh_vol = None
+            ivh_a = None
+            ivh_b = None
             tumor_volumes_in_crop_per_voxel = None
             tumor_diameters_per_voxel = None
             names=None
@@ -300,6 +311,14 @@ def train_epoch(trainLoader, net, ema_net, optimizer, epoch, writer, scaler, arg
                 chosen_segment_mask = chosen_segment_mask.cuda(non_blocking=True)
             if tumor_diameters is not None:
                 tumor_diameters = tumor_diameters.cuda(non_blocking=True)
+            if y_ivh is not None:
+                y_ivh = y_ivh.cuda(non_blocking=True)
+            if ivh_vol is not None:
+                ivh_vol = ivh_vol.cuda(non_blocking=True)
+            if ivh_a is not None:
+                ivh_a = ivh_a.cuda(non_blocking=True)
+            if ivh_b is not None:
+                ivh_b = ivh_b.cuda(non_blocking=True)
        
         step = i + epoch * len(trainLoader) # global steps
         
@@ -323,6 +342,7 @@ def train_epoch(trainLoader, net, ema_net, optimizer, epoch, writer, scaler, arg
                                 class_weights=class_weights if 'class_weights' in locals() else None,
                                 model_genesis=args.model_genesis_pretrain,
                                 clip_only = args.clip_pretrain, report_embeddings=report_embeddings, dist=dist,
+                                y_ivh=y_ivh, ivh_vol=ivh_vol, ivh_a=ivh_a, ivh_b=ivh_b,
                                 ) # pass class_weights if available, otherwise None
             loss=loss_all['overall']
 
@@ -349,6 +369,7 @@ def train_epoch(trainLoader, net, ema_net, optimizer, epoch, writer, scaler, arg
                                 class_weights=class_weights if 'class_weights' in locals() else None,
                                 model_genesis=args.model_genesis_pretrain,
                                 clip_only = args.clip_pretrain, report_embeddings=report_embeddings, dist=dist,
+                                y_ivh=y_ivh, ivh_vol=ivh_vol, ivh_a=ivh_a, ivh_b=ivh_b,
                                 ) # pass class_weights if available, otherwise None
             loss=loss_all['overall']
             loss.backward()
@@ -366,6 +387,8 @@ def train_epoch(trainLoader, net, ema_net, optimizer, epoch, writer, scaler, arg
             loss_meters['Elapsed Time'] = AverageMeter("Elapsed Time", ":6.2f")
 
         for k, v in loss_all.items():
+            if k not in loss_meters:   # clés conditionnelles (ex ivh_presence/ivh_bkg : absentes des batchs sans item-rapport)
+                loss_meters[k] = AverageMeter(k, ":6.4f")
             loss_meters[k].update(v.item(), img.shape[0])
 
         elapsed_time = time.time() - start_epoch_time
@@ -481,6 +504,21 @@ def get_parser():
     parser.add_argument('--rotate_override', type=int, default=None, help='Override l angle de rotation (augmentation) : applique [v,v,v].')
     parser.add_argument('--training_size_override', type=int, nargs=3, default=None, help='Override la taille de patch D H W (et window_size).')
     parser.add_argument('--val_freq', type=int, default=None, help='Override val_freq du config. Ex: 999 = ne jamais valider (pas de best.pth ; utile petits pools ou la val est bruitee -> on garde fold_0_latest.pth = derniere epoch).')
+    # --- Loss de PRESENCE IVH (detection faible-supervisee par rapports ; cf training/ivh_presence_loss.py) ---
+    parser.add_argument('--ivh_flags', type=str, default=None, help='CSV BDMAP_ID,y_ivh (flag rapport IVH par scan, matching exact). Active la loss de presence si --loss contient "ivh_presence".')
+    parser.add_argument('--ivh_lambda', type=float, default=0.1, help='Poids global lambda de la loss de presence IVH (rampe sur --ivh_ramp_epochs).')
+    parser.add_argument('--ivh_beta', type=float, default=1.0, help='Poids beta de la suppression de fond dans la loss de presence.')
+    parser.add_argument('--ivh_gamma', type=float, default=10.0, help='Nettete du LogSumExp pooling (calibre a 10).')
+    parser.add_argument('--ivh_tau_pos', type=float, default=0.42, help='Seuil hinge positif tau+ (p20 des positifs, gamma=10).')
+    parser.add_argument('--ivh_tau_neg', type=float, default=0.30, help='Seuil hinge negatif tau- (p92 des negatifs, gamma=10).')
+    parser.add_argument('--ivh_lambda_neg', type=float, default=0.9, help='Affaiblissement du cote negatif (encode ~14% FN rapport).')
+    parser.add_argument('--ivh_ramp_epochs', type=int, default=10, help='Nb epochs de rampe lineaire de lambda depuis 0.')
+    # --- SIZE-LOSS IVH ORACLE (Kervadec Eq.2 ancre R_pool ; cf training/size_loss.py). Active si --loss contient "ivh_size" ---
+    parser.add_argument('--ivh_size_oracle', type=str, default=None, help='CSV BDMAP_ID,ivh_ml : volume IVH oracle par cas _0 (cible du size-loss).')
+    parser.add_argument('--ivh_size_lambda', type=float, default=0.5, help='Poids lambda du size-loss IVH (rampe sur --ivh_ramp_epochs).')
+    parser.add_argument('--ivh_size_tol', type=float, default=0.1, help='Tolerance relative de la bande [±tol]*V (0.1 = ±10%).')
+    parser.add_argument('--ivh_size_dil', type=int, default=15, help='Dilatation (mm/voxels 1mm) du ventricule pour l ancre R_pool.')
+    parser.add_argument('--ivh_bounds_table', type=str, default=None, help='CSV BDMAP_ID,a_ml,b_ml : bornes report-only du size-loss (active si --loss contient "ivhbounds").')
 
 
 

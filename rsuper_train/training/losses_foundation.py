@@ -713,7 +713,8 @@ def merge_no_overlap(d1, d2):
 def calculate_loss(model_output, label, unk_voxels, args, matcher,chosen_segment_mask,
                    tumor_volumes_report,tumor_diameters,
                    classes,input_tensor=None, class_weights=None, model_genesis=False,
-                   clip_only=False,report_embeddings=None, dist=None):
+                   clip_only=False,report_embeddings=None, dist=None, y_ivh=None, ivh_vol=None,
+                   ivh_a=None, ivh_b=None):
     """
     This function calculates all of our loss functions, i.e., the segmentation loss (dice and BCE), and the report supervision
     losses (volume and ball loss), and any baseline loss (clip, classification, models genesis).
@@ -1127,15 +1128,90 @@ def calculate_loss(model_output, label, unk_voxels, args, matcher,chosen_segment
                     weight = 1
                 loss_report[key] = args.report_volume_loss_basic * weight * loss_r[key]
                 
+    # ===================== LOSS DE PRÉSENCE IVH (détection faible-supervisée) =====================
+    # S'applique aux items-RAPPORT (y_ivh in {0,1} ; masque/atlas = -1 -> ignorés). R_pool/R_supp
+    # dérivés AU VOL du canal 'ventricule' du label (dilatations 10/15mm), p_IVH = sigmoid(head
+    # FINAL [0], canal ivh_lesion). Poids = lambda (rampé). Détail : training/ivh_presence_loss.py.
+    ivh_pres_terms = {}
+    if y_ivh is not None and 'ivh_presence' in (getattr(args, 'loss', '') or ''):
+        rep = torch.where(y_ivh.reshape(-1) >= 0)[0]
+        vent_ch = [i for i, c in enumerate(classes) if c.lower() == 'ventricle']
+        ivh_ch = [i for i, c in enumerate(classes) if c.lower() == 'ivh_lesion']
+        if len(rep) > 0 and vent_ch and ivh_ch:
+            from .ivh_presence_loss import ivh_presence_loss
+            seg = model_output['segmentation'] if isinstance(model_output, dict) else model_output
+            # head[0] = sortie FINALE (celle que l'inférence/éval consomme, cf inference3d.py:88 pred[0]).
+            # head[1:] = heads auxiliaires de deep supervision. Pousser [0] (BUG précédent: [-1] -> aux head).
+            out_final = seg[0] if isinstance(seg, (tuple, list)) else seg
+            p_ivh = torch.sigmoid(out_final[rep, ivh_ch[0]].float())         # (R,D,H,W)
+            vent = (label[rep, vent_ch[0]] > 0).float()                      # ventricule per-voxel
+            r_pool = dilate_volume(vent.unsqueeze(1), 21)[:, 0]              # ventricule dilaté ~10mm
+            r_supp = dilate_volume(vent.unsqueeze(1), 31)[:, 0]             # ventricule dilaté ~15mm
+            divh = ivh_presence_loss(p_ivh, r_pool, r_supp, y_ivh.reshape(-1)[rep].float(),
+                                     gamma=args.ivh_gamma, tau_pos=args.ivh_tau_pos, tau_neg=args.ivh_tau_neg,
+                                     lambda_neg=args.ivh_lambda_neg, beta=args.ivh_beta)
+            w = getattr(args, '_ivh_ramp', 1.0) * args.ivh_lambda           # lambda rampé
+            ivh_pres_terms = {'ivh_presence': w * divh['ivh_presence'], 'ivh_bkg': w * divh['ivh_bkg']}
+
+    # ===================== SIZE-LOSS IVH ORACLE (Kervadec Eq.2, ancré R_pool) =====================
+    # Cas-rapport _0 avec volume IVH oracle (masque). V_S = Σσ(p_IVH) sur R_pool=ventricule+15mm,
+    # contrainte [0.9V, 1.1V] (V=volume masque, mL->voxels). Head FINAL [0] (leçon du bug présence).
+    # Réutilise training/size_loss.volume_size_loss (region_mask + normalize borné).
+    ivh_size_terms = {}
+    if ivh_vol is not None and 'ivhvol' in (getattr(args, 'loss', '') or ''):   # mot-clé SANS 'size' (évite le chemin ICH)
+        rep = torch.where(ivh_vol.reshape(-1) >= 0)[0]
+        vent_ch = [i for i, c in enumerate(classes) if c.lower() == 'ventricle']
+        ivh_ch = [i for i, c in enumerate(classes) if c.lower() == 'ivh_lesion']
+        if len(rep) > 0 and vent_ch and ivh_ch:
+            from .size_loss import volume_size_loss
+            seg = model_output['segmentation'] if isinstance(model_output, dict) else model_output
+            out_final = seg[0] if isinstance(seg, (tuple, list)) else seg
+            p_ivh = torch.sigmoid(out_final[rep, ivh_ch[0]].float())         # (R,D,H,W)
+            vent = (label[rep, vent_ch[0]] > 0).float()
+            r_pool = dilate_volume(vent.unsqueeze(1), args.ivh_size_dil * 2 + 1)[:, 0]  # ventricule +Dmm
+            target = ivh_vol.reshape(-1)[rep].float() * 1000.0              # mL -> voxels(mm³) 1mm iso
+            valid = torch.ones_like(target)
+            dsize = volume_size_loss(p_ivh.unsqueeze(1), target.unsqueeze(1),
+                                     tolerance=args.ivh_size_tol, region_mask=r_pool.unsqueeze(1),
+                                     normalize=True, valid=valid.unsqueeze(1), reduction='mean')
+            w = getattr(args, '_ivh_ramp', 1.0) * args.ivh_size_lambda
+            ivh_size_terms = {'ivh_size': w * dsize}
+
+    # ============= SIZE-LOSS IVH REPORT-ONLY (bornes explicites [a,b], Kervadec) =============
+    # Comme ci-dessus mais bornes a,b viennent du RAPPORT (ncomp->niveau->percentiles), pas du masque.
+    # a=b=0 pour rapport IVH- (suppression) ; b=1e9 pour 'floor' (pas de borne haute). Head FINAL [0].
+    if ivh_a is not None and 'ivhbounds' in (getattr(args, 'loss', '') or ''):
+        rep = torch.where(ivh_a.reshape(-1) >= 0)[0]
+        vent_ch = [i for i, c in enumerate(classes) if c.lower() == 'ventricle']
+        ivh_ch = [i for i, c in enumerate(classes) if c.lower() == 'ivh_lesion']
+        if len(rep) > 0 and vent_ch and ivh_ch:
+            from .size_loss import volume_size_loss_ab
+            seg = model_output['segmentation'] if isinstance(model_output, dict) else model_output
+            out_final = seg[0] if isinstance(seg, (tuple, list)) else seg
+            p_ivh = torch.sigmoid(out_final[rep, ivh_ch[0]].float())
+            vent = (label[rep, vent_ch[0]] > 0).float()
+            r_pool = dilate_volume(vent.unsqueeze(1), args.ivh_size_dil * 2 + 1)[:, 0]
+            a = (ivh_a.reshape(-1)[rep].float() * 1000.0).unsqueeze(1)          # mL -> voxels
+            b = (ivh_b.reshape(-1)[rep].float() * 1000.0).unsqueeze(1)
+            valid = torch.ones_like(a)
+            dsz = volume_size_loss_ab(p_ivh.unsqueeze(1), a, b, region_mask=r_pool.unsqueeze(1),
+                                      normalize=True, valid=valid, reduction='mean')
+            w = getattr(args, '_ivh_ramp', 1.0) * args.ivh_size_lambda
+            ivh_size_terms = {'ivh_size': w * dsz}
+
     loss={'segmentation':loss_segmentation}
     if isinstance(loss_report,dict):
         for key in loss_report.keys():
             loss[key] = loss_report[key]
     else:
         loss['report'] = loss_report
-        
+
     if cls_loss is not None:
         loss['classification'] = cls_loss
+    for _k, _v in ivh_pres_terms.items():
+        loss[_k] = _v
+    for _k, _v in ivh_size_terms.items():
+        loss[_k] = _v
 
     loss_overall = 0
     for key in loss.keys():

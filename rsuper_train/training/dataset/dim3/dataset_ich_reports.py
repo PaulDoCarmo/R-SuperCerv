@@ -135,7 +135,23 @@ class ICHReportsDataset(Dataset):
         
         self.mode = mode
         self.args = args
-        self.load_augmented = load_augmented   
+        # Flag rapport IVH par SCAN (loss de présence). {cid: 0/1} ; vide => loss inactive.
+        # y_ivh de l'item : flag si item-rapport connu, -1 sinon (masque/atlas -> ignoré par la loss).
+        self.ivh_flags = {}
+        if getattr(args, 'ivh_flags', None):
+            _fl = pd.read_csv(args.ivh_flags)
+            self.ivh_flags = dict(zip(_fl['BDMAP_ID'].astype(str), _fl['y_ivh'].astype(int)))
+        # volume IVH ORACLE (mL) par cas _0 (depuis le masque) -> cible du size-loss oracle.
+        self.ivh_oracle = {}
+        if getattr(args, 'ivh_size_oracle', None):
+            _ov = pd.read_csv(args.ivh_size_oracle)
+            self.ivh_oracle = dict(zip(_ov['BDMAP_ID'].astype(str), _ov['ivh_ml'].astype(float)))
+        # bornes REPORT-ONLY (a,b en mL) par cas -> size-loss à bornes explicites (floor/tiered).
+        self.ivh_bounds = {}
+        if getattr(args, 'ivh_bounds_table', None):
+            _bd = pd.read_csv(args.ivh_bounds_table)
+            self.ivh_bounds = {str(r.BDMAP_ID): (float(r.a_ml), float(r.b_ml)) for r in _bd.itertuples()}
+        self.load_augmented = load_augmented
         self.save_counter = 0 
         self.save_destination = save_destination
         self.gigantic_length=gigantic_length
@@ -482,7 +498,12 @@ class ICHReportsDataset(Dataset):
             
             
 
-            if not self.save_augmented:
+            # Augmentation d'INTENSITÉ désactivée sur les items-RAPPORT en mode ivh_presence :
+            # τ⁺/τ⁻ sont calibrés sur images non-augmentées ; l'aug d'intensité décalerait p_IVH
+            # (donc s_i) et casserait cette cohérence. Les masques RSNA gardent l'aug (robustesse).
+            _skip_int_aug = ('ivh_presence' in (getattr(self.args, 'loss', '') or '')) and \
+                            (self.img_list[idx] in self.UFO_paths)
+            if (not self.save_augmented) and (not _skip_int_aug):
                 #this augmentation is online.
                 if np.random.random() < 0.3:
                     tensor_img = augmentation.brightness_multiply(tensor_img, multiply_range=[0.7, 1.3])
@@ -495,7 +516,7 @@ class ICHReportsDataset(Dataset):
                 if np.random.random() < 0.3:
                     tensor_img = augmentation.gaussian_blur(tensor_img, sigma_range=[0.5, 1.5])
                 if np.random.random() < 0.3:
-                    std = np.random.random() * 0.2 
+                    std = np.random.random() * 0.2
                     tensor_img = augmentation.gaussian_noise(tensor_img, std=std)
         
         else:
@@ -547,12 +568,28 @@ class ICHReportsDataset(Dataset):
                 tensor_img, tensor_lab = self.generate_pair(tensor_img.cpu().numpy())
                 tensor_img, tensor_lab = torch.from_numpy(tensor_img).float(), torch.from_numpy(tensor_lab).float()
             
+            # flag rapport IVH de cet item (par scan) : -1 si item-masque/atlas -> loss de présence l'ignore.
+            _cid = os.path.basename(self.img_list[idx])
+            for _suf in ('_gt.npz', '_gt.npy', '.npz', '.npy'):
+                if _cid.endswith(_suf):
+                    _cid = _cid[:-len(_suf)]; break
+            y_ivh = self.ivh_flags.get(_cid, -1) if self.img_list[idx] in self.UFO_paths else -1
+            # volume IVH oracle (mL) : cible du size-loss. -1 = non supervisé (pas un cas-rapport
+            # _0 à masque valide -> masques RSNA, _1 corrompus, cas absents de la table).
+            ivh_vol = self.ivh_oracle.get(_cid, -1.0) if self.img_list[idx] in self.UFO_paths else -1.0
+            # bornes report-only (a,b) mL ; (-1,-1) = non supervisé (pas un cas-rapport dans la table)
+            _ab = self.ivh_bounds.get(_cid, (-1.0, -1.0)) if self.img_list[idx] in self.UFO_paths else (-1.0, -1.0)
+
             retur = {"image":           tensor_img.clone(),
                     "label":           tensor_lab.clone(),
                     "unk_channels":    unk_channels_tensor.clone(),
                     "volumes":         torch.tensor(tumor_volumes_in_crop).float().clone(),
                     "mask":            chosen_segment_mask.float().clone(),
-                    "diameters":       tumor_diameters.type_as(tensor_img).clone()
+                    "diameters":       tumor_diameters.type_as(tensor_img).clone(),
+                    "y_ivh":           torch.tensor([float(y_ivh)]),
+                    "ivh_vol":         torch.tensor([float(ivh_vol)]),
+                    "ivh_a":           torch.tensor([float(_ab[0])]),
+                    "ivh_b":           torch.tensor([float(_ab[1])]),
                     }
             return retur
             
@@ -803,7 +840,9 @@ class ICHReportsDataset(Dataset):
         return tumor_segment_mask
 
     def get_chosen_segment_mask(self, tensor_lab, tumor_segment):
-        if tumor_segment == 'random':
+        if tumor_segment in ('random', 'ventricle_ivh'):
+            # 'ventricle_ivh' : mode loss-de-présence -> pas de size-loss, chosen_segment vide
+            # (la présence utilise le flag y_ivh + le canal ventricule, pas ce masque).
             return torch.zeros_like(tensor_lab).type_as(tensor_lab)
         # 'ich_pseudo' (cas ancre) : la region EST le pseudo-masque (canal ich_lesion), pas une structure.
         if tumor_segment == 'ich_pseudo':
@@ -847,6 +886,22 @@ class ICHReportsDataset(Dataset):
             #print('This is an image with tumor annotations from reports:'+self.img_list[idx], flush=True, file=sys.stderr)
             #data without per-voxel tumor annotations, just reports mentioning tumors
             segments,tumor_dict=self.get_tumor_segment_labels(idx)
+
+            # === IVH-PRÉSENCE / SIZE : crop centré sur le VENTRICULE (la région d'ancre R_pool =
+            # ventricule dilaté doit être dans le crop ; crop_foreground_3d garantit le ventricule
+            # entier, sinon fallback). Sentinel 'ventricle_ivh' -> chosen_segment_mask/volume vides
+            # (le size_report_loss standard skip) ; les hooks ivh_presence/ivh_size utilisent le
+            # canal ventricule + (y_ivh | ivh_vol).
+            if ('ivh_presence' in (getattr(self.args, 'loss', '') or '')) or \
+               ('ivhvol' in (getattr(self.args, 'loss', '') or '')) or \
+               ('ivhbounds' in (getattr(self.args, 'loss', '') or '')):
+                _v = [i for i, c in enumerate(self.classes_UFO) if c.lower() == 'ventricle']
+                if _v and float(tensor_lab[:, _v].sum()) > 0:
+                    vfg = (tensor_lab[:, _v].sum(1) > 0).float()
+                    out = augmentation.crop_foreground_3d(tensor_ct=tensor_img, tensor_lab=tensor_lab,
+                                                          foreground=vfg, crop_size=[d, h, w])
+                    if isinstance(out, tuple):
+                        return out[0], out[1], tumor_dict, 'ventricle_ivh'
 
             # === CAS ANCRE : pseudo-masque ICH present -> pipeline 100% PSEUDO-MASQUE.
             # Centrage + volume (Vr) + chosen_segment_mask + unk sont bases sur le pseudo-masque,
@@ -1282,8 +1337,8 @@ class ICHReportsDataset(Dataset):
         A 1mm iso : mm3 = nombre de voxels (ce qu'attend la volume-loss).
         """
         _, tumor_dict = self.get_tumor_segment_labels(idx)
-        if tumor_segment_crop is None or tumor_segment_crop == 'random':
-            return [0]*10, torch.zeros((10, 3)).float()  # crop pas centre sur une region-lesion
+        if tumor_segment_crop is None or tumor_segment_crop in ('random', 'ventricle_ivh'):
+            return [0]*10, torch.zeros((10, 3)).float()  # crop pas centre sur une region-lesion (ou mode ivh_presence)
 
         if tumor_segment_crop == 'ich_pseudo':
             # cas ANCRE : crop centre sur le pseudo-masque (lesion entiere dans le patch) -> cible
